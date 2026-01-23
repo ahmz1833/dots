@@ -1,0 +1,30 @@
+#!/bin/bash
+set -e
+NTP_SRV=${1:-"pool.ntp.org"} # Use the first argument or default to "pool.ntp.org"
+echo NTP Server: ${NTP_SRV}
+echo 
+echo Before any manipulation:
+sudo timedatectl status
+echo
+echo Disable NTP and Set local-rtc=0
+sudo timedatectl set-ntp 0 && sudo timedatectl set-local-rtc 0
+echo 
+echo Status:
+sudo timedatectl status
+echo
+echo Sync with NTP server:
+sudo ntpdate ${NTP_SRV}
+echo
+echo Enable NTP
+sudo timedatectl set-ntp 1
+echo
+echo Sync with NTP server:
+sudo ntpdate ${NTP_SRV}
+echo
+echo
+sudo timedatectl status
+echo 
+echo Enable Local-RTC:
+sudo timedatectl set-local-rtc 1
+echo
+sudo timedatectl status

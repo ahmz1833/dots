@@ -1,0 +1,36 @@
+#!/bin/bash
+
+# Function to display current DNS for $DEVICE and flush caches
+show_dns() {
+    sudo resolvectl status $DEVICE
+    sudo resolvectl flush-caches
+}
+
+# Function to change DNS servers based on passed arguments
+change_dns() {
+    sudo resolvectl dns $DEVICE "$@"
+    sudo resolvectl flush-caches  # Flush DNS caches
+    sudo systemctl restart systemd-resolved.service  # Restart systemd-resolved to apply changes
+    echo "DNS servers changed to: $@"
+}
+
+# Function to revert DNS settings for $DEVICE
+revert_dns() {
+    sudo resolvectl revert $DEVICE
+    sudo resolvectl flush-caches  # Flush DNS caches
+    sudo systemctl restart systemd-resolved.service  # Restart systemd-resolved to apply changes
+    echo "Reverted DNS to system default for $DEVICE."
+}
+
+# Main script logic
+if [[ "$1" == "-r" ]]; then
+    # Revert DNS to system default
+    revert_dns
+elif [[ $# -eq 0 ]]; then
+    # Show current DNS settings and flush cache
+    show_dns
+else
+    # Change DNS using arguments
+    change_dns "$@"
+fi
+

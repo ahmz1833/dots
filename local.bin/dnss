@@ -1,0 +1,34 @@
+#!/bin/bash
+
+# Get the UUID of the active connection
+con_name=$(nmcli -t -f UUID connection show --active | head -n 1 | xargs)
+
+if [ -z "$con_name" ]; then
+  echo "No active connection found."
+  exit 1
+fi
+
+# Check if arguments are provided
+if [ $# -eq 0 ]; then
+  # Reset DNS settings to automatic
+  echo "Resetting DNS settings to automatic..."
+  nmcli con mod "$con_name" ipv4.ignore-auto-dns no
+  nmcli con mod "$con_name" ipv4.dns ""
+  nmcli con mod "$con_name" ipv6.method auto 
+else
+  # Set custom DNS servers
+  dnses="$*"
+  echo "Setting custom DNS servers: $dnses"
+  nmcli con mod "$con_name" ipv4.ignore-auto-dns yes
+  nmcli con mod "$con_name" ipv4.dns "$dnses"
+  nmcli con mod "$con_name" ipv6.method disable
+fi
+
+resolvectl flush-caches
+
+# Restart the connection
+echo "Restarting the connection..."
+nmcli con down "$con_name" && nmcli con up "$con_name"
+
+echo "Done."
+

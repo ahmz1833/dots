@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# --- File to store previous state ---
+TMP_FILE="/tmp/starship_cpu_last"
+
+# --- Read Current Stats ---
+# user, nice, system, idle, iowait, irq, softirq, steal
+read cpu a b c idle iowait irq softirq steal guest < /proc/stat
+total=$((a+b+c+idle+iowait+irq+softirq+steal))
+idle_sum=$((idle+iowait))
+
+# --- Calculate Delta (Current - Previous) ---
+if [ -f "$TMP_FILE" ]; then
+    read prev_total prev_idle < "$TMP_FILE"
+    diff_total=$((total-prev_total))
+    diff_idle=$((idle_sum-prev_idle))
+    
+    # Avoid division by zero
+    if [ "$diff_total" -gt 0 ]; then
+        cpu=$((100*(diff_total-diff_idle)/diff_total))
+    else
+        cpu=0
+    fi
+else
+    # First run fallback (prevents error)
+    cpu=0
+fi
+
+# --- Save Current Stats for Next Run ---
+echo "$total $idle_sum" > "$TMP_FILE"
+
+# --- Memory Calculation ---
+mem=$(free | grep Mem | awk '{print $3/$2 * 100.0}' | awk '{printf "%.0f", $1}')
+
+# --- Palette ---
+red="\x1b[38;2;240;74;80m"
+orange="\x1b[38;2;255;162;0m"
+green="\x1b[38;2;106;232;157m"
+norm="\x1b[38;2;232;227;227m"
+
+# --- Thresholds ---
+if [ "$cpu" -ge 80 ]; then c_color=$red; elif [ "$cpu" -ge 50 ]; then c_color=$orange; else c_color=$green; fi
+if [ "$mem" -ge 80 ]; then m_color=$red; elif [ "$mem" -ge 50 ]; then m_color=$orange; else m_color=$green; fi
+
+# --- Output ---
+echo -e "${c_color} ${norm}${cpu}%  ${m_color} ${norm}${mem}%"

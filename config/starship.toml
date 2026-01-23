@@ -1,0 +1,432 @@
+# ░█▀▀░█▀█░█▀█░█▀▄░▀▀█░█░█░▀█▀░█▀█
+# ░▀▀█░░█░░█▀█░█▀▄░▀▀█░█▀█░░█░░█▀▀
+# ░▀▀▀░░▀░░▀░▀░▀░▀░▀▀▀░▀░▀░▀▀▀░▀░░
+# AH MZ 2026 - Starship Prompt Configuration
+# Hybrid Configuration: 1amSimp1e Style + Myth Functionality
+
+"$schema" = 'https://starship.rs/config-schema.json'
+add_newline = true
+palette = "hybrid"
+
+# RIGHT SIDE: Public IP -> Duration -> Status
+right_format = """$cmd_duration$status${custom.publicip}${custom.usage}"""
+
+# LEFT SIDE: OS -> SSH -> Dir -> Git -> Languages -> Line Break -> Info -> Prompt
+format = """
+$os\
+${custom.ssh}\
+$directory\
+$git_branch\
+$git_status\
+$git_commit\
+$git_state\
+$git_metrics\
+$fill \
+$docker_context\
+$kubernetes\
+$package\
+$c\
+$cmake\
+$cobol\
+$daml\
+$dart\
+$deno\
+$dotnet\
+$elixir\
+$elm\
+$erlang\
+$fennel\
+$golang\
+$guix_shell\
+$haskell\
+$haxe\
+$helm\
+$java\
+$julia\
+$kotlin\
+$gradle\
+$lua\
+$nim\
+$nodejs\
+$ocaml\
+$opa\
+$perl\
+$php\
+$pulumi\
+$purescript\
+$python\
+$raku\
+$rlang\
+$red\
+$ruby\
+$rust\
+$scala\
+$solidity\
+$swift\
+$terraform\
+$vlang\
+$vagrant\
+$zig\
+$buf\
+$nix_shell\
+$conda\
+$spack\
+$memory_usage\
+$env_var\
+${localip}\
+$battery\
+$time\
+$sudo\
+$line_break\
+$jobs\
+$shlvl\
+$container\
+$shell\
+$character"""
+
+[palettes.hybrid]
+# --- Base Colors ---
+dark_bg         = "#252525"
+text_light      = "#E8E3E3"
+
+# --- Tweakable Module Colors (Backgrounds/Accents) ---
+bg_dir          = "#6791C9"     # Directory Icon background
+bg_git          = "#81C19B"     # Git Branch Icon background
+bg_ip_priv      = "#74b5ff"     # Private IP
+bg_ip_pub       = "#a074de"     # Public IP
+bg_duration     = "#FFEE55"     # Command Duration
+
+# --- Status Colors ---
+st_ok           = "#6ae89d"     # Status OK (0)
+st_err          = "#f04a50"     # Status Error (non-0)
+
+# --- Battery Colors ---
+bat_full        = "#00CCFF"     # 100% Charged
+bat_ok          = "#81C19B"     # 30-99%
+bat_low         = "#FFA200"     # 10-30%
+bat_critical    = "#B66467"     # 0-10%
+
+# --- Git Status Colors ---
+git_ok          = "#90deaf"     # Staged/Renamed/Committed
+git_warn        = "#FFA200"     # Modified/Stashed
+git_alert       = "#f07478"     # Untracked/Deleted/Conflicted
+
+# --- Language Brand Colors ---
+# You can tweak these to change the icon color for each language
+lang_c = "#555555"
+lang_cmake = "#064F8C"
+lang_conda = "#8BCB48"
+lang_dart = "#00B4AB"
+lang_docker = "#2496ED"
+lang_dotnet = "#512BD4"
+lang_elixir = "#4E2A8E"
+lang_elm = "#60B5CC"
+lang_go = "#00ADD8"
+lang_haskell = "#5E5086"
+lang_java = "#B07219"
+lang_js = "#F7DF1E"
+lang_julia = "#9558B2"
+lang_kotlin = "#F18E33"
+lang_lua = "#000080"
+lang_nim = "#FFE953"
+lang_node = "#339933"
+lang_perl = "#39457E"
+lang_php = "#777BB4"
+lang_python = "#3776AB"
+lang_ruby = "#CC342D"
+lang_rust = "#DEA584"
+lang_scala = "#DC322F"
+lang_swift = "#F05138"
+lang_terraform = "#623CE4"
+lang_zig = "#ECA700"
+pkg_generic = "#E8E3E3"
+
+# ------------------------------------------------------------------------------
+# CORE MODULES
+# ------------------------------------------------------------------------------
+
+[character]
+success_symbol = "[❯](st_ok bold)"
+error_symbol = "[❯](st_err bold)"
+vicmd_symbol = "[❯](purple bold)"
+
+[fill]
+symbol = '─'
+style = "fg:dark_bg"
+
+[line_break]
+disabled = false
+
+[cmd_duration]
+min_time = 1
+show_milliseconds = true
+# Format: (Duration)(Clock Icon)
+format = "[](fg:dark_bg)[$duration](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:bg_duration bg:dark_bg)[󱑂](fg:dark_bg bg:bg_duration)[](fg:bg_duration) "
+
+[status]
+disabled = false
+# Shows tick/cross. If error > 127 (signal), shows signal name.
+# Auto color via $style argument in format isn't fully supported for the whole pill, 
+# so we use specific symbols and success/error styles on the text.
+format = '[](fg:dark_bg)[$symbol$common_meaning$signal_name$maybe_int]($style)[](fg:dark_bg) '
+symbol = "✘ "
+success_symbol = "✔"
+style = "bg:dark_bg fg:st_err" # Error color
+success_style = "bg:dark_bg fg:st_ok" # Success color
+map_symbol = true
+
+[time]
+disabled = false
+use_12hr = false
+time_format = "%H:%M"
+format = "[ $time 󰅐 ](fg:text_light bold)"
+
+[battery]
+disabled = false
+format = "[$symbol$percentage]($style) "
+full_symbol = "󰁹 "
+charging_symbol = "󱊥 "
+discharging_symbol = "󱊡 "
+unknown_symbol = "󰂑 "
+empty_symbol = "󰂎 "
+[[battery.display]]
+threshold = 10
+style = "bold bat_critical"
+[[battery.display]]
+threshold = 30
+style = "bold bat_low"
+[[battery.display]]
+threshold = 99
+style = "bold bat_ok"
+[[battery.display]]
+threshold = 100
+style = "bold bat_full"
+
+# Toggle command: starship toggle custom.usage
+[custom.usage]
+disabled = false
+description = "CPU & Memory Usage with Dynamic Colors"
+command = "~/.local/bin/checkusage"
+format = "[](fg:dark_bg)[$output](bg:dark_bg)[](fg:dark_bg) "
+when = "true"
+shell = ["bash", "--noprofile", "--norc"]
+
+# ------------------------------------------------------------------------------
+# CONTEXT
+# ------------------------------------------------------------------------------
+
+[custom.ssh]
+description = "Show user@host only in SSH and not in TMUX"
+when = '[[ -n "$SSH_CONNECTION" ]] && [[ -z "$TMUX" ]]'
+command = 'echo "$USER@$(hostname)"'
+format = "[](fg:dark_bg)[$output](bold fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:text_light bg:dark_bg)[󰱠](fg:dark_bg bg:text_light)[](fg:text_light) "
+shell = ["bash", "--noprofile", "--norc"]
+
+[os]
+disabled = false
+format = "$symbol"
+
+[os.symbols]
+Alpaquita = "[](fg:#0D597F)[](bg:#0D597F fg:#FFFFFF)[](fg:#0D597F) "
+Alpine = "[](fg:#0D597F)[](bg:#0D597F fg:#FFFFFF)[](fg:#0D597F) "
+Amazon = "[](fg:#FF9900)[](bg:#FF9900 fg:black)[](fg:#FF9900) "
+Android = "[](fg:#3DDC84)[](bg:#3DDC84 fg:black)[](fg:#3DDC84) "
+Arch = "[](fg:#1793D1)[](bg:#1793D1 fg:#FFFFFF)[](fg:#1793D1) "
+CentOS = "[](fg:#932279)[](bg:#932279 fg:#FFFFFF)[](fg:#932279) "
+Debian = "[](fg:#A81D33)[](bg:#A81D33 fg:#FFFFFF)[](fg:#A81D33) "
+Fedora = "[](fg:#51A2DA)[](bg:#51A2DA fg:#FFFFFF)[](fg:#51A2DA) "
+FreeBSD = "[](fg:#AB2B28)[](bg:#AB2B28 fg:#FFFFFF)[](fg:#AB2B28) "
+Gentoo = "[](fg:#54487A)[](bg:#54487A fg:#FFFFFF)[](fg:#54487A) "
+Linux = "[](fg:#FCC624)[](bg:#FCC624 fg:black)[](fg:#FCC624) "
+Macos = "[](fg:#A2AAAD)[](bg:#A2AAAD fg:black)[](fg:#A2AAAD) "
+Manjaro = "[](fg:#35BF5C)[](bg:#35BF5C fg:#FFFFFF)[](fg:#35BF5C) "
+Mint = "[](fg:#87CF3E)[󰣭](bg:#87CF3E fg:black)[](fg:#87CF3E) "
+NixOS = "[](fg:#5277C3)[](bg:#5277C3 fg:#FFFFFF)[](fg:#5277C3) "
+OpenBSD = "[](fg:#F2CA30)[](bg:#F2CA30 fg:black)[](fg:#F2CA30) "
+openSUSE = "[](fg:#73BA25)[](bg:#73BA25 fg:black)[](fg:#73BA25) "
+Raspbian = "[](fg:#C51A4A)[](bg:#C51A4A fg:#FFFFFF)[](fg:#C51A4A) "
+Redhat = "[](fg:#EE0000)[󱄛](bg:#EE0000 fg:#FFFFFF)[](fg:#EE0000) "
+RedHatEnterprise = "[](fg:#EE0000)[](bg:#EE0000 fg:#FFFFFF)[](fg:#EE0000) "
+Ubuntu = "[](fg:#E95420)[](bg:#E95420 fg:#FFFFFF)[](fg:#E95420) "
+Windows = "[](fg:#0078D4)[](bg:#0078D4 fg:#FFFFFF)[](fg:#0078D4) "
+
+[localip]
+disabled = false
+ssh_only = false
+format = "[](fg:dark_bg)[$localipv4](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:bg_ip_priv bg:dark_bg)[󰩠](fg:dark_bg bg:bg_ip_priv)[](fg:bg_ip_priv) "
+
+[custom.localip]
+disabled = true
+description = "Local IP Address (Hides on Disconnect)"
+command = "hostname -i | cut -d' ' -f1"
+when = "hostname -i | grep -q ."
+format = "[](fg:dark_bg)[$output](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:bg_ip_priv bg:dark_bg)[󰩠](fg:dark_bg bg:bg_ip_priv)[](fg:bg_ip_priv) "
+shell = ["sh"]
+
+[custom.publicip]
+disabled = true
+description = "Public IP Address"
+command = "~/.local/bin/checkip"
+format = "([](fg:dark_bg)[$output](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:bg_ip_pub bg:dark_bg)[](fg:dark_bg bg:bg_ip_pub)[](fg:bg_ip_pub) )"
+when = "true"
+
+# ------------------------------------------------------------------------------
+# DIRECTORY & GIT
+# ------------------------------------------------------------------------------
+
+[directory]
+truncation_length = 4
+truncate_to_repo = true
+home_symbol = " "
+read_only = " "
+format = "[](fg:dark_bg)[$path]($style)[](fg:dark_bg bg:dark_bg)[](fg:bg_dir bg:dark_bg)[$read_only](fg:dark_bg bg:bg_dir)[](fg:bg_dir) "
+style = "fg:text_light bg:dark_bg bold"
+
+[git_branch]
+symbol = ""
+format = "[](fg:bg_git)[$symbol](fg:dark_bg bg:bg_git)[](fg:bg_git bg:dark_bg)[](fg:dark_bg bg:dark_bg)[$branch]($style)[](fg:dark_bg)"
+style = "fg:text_light bg:dark_bg"
+
+[git_status]
+# Tweaked "Auto Color" for text items (red/yellow/blue)
+format = "([](fg:dark_bg)[ $all_status$ahead_behind](bg:dark_bg)[](fg:dark_bg)) "
+staged = "[${count} ](fg:git_ok bg:dark_bg)"      # Green
+modified = "[${count} ](fg:git_warn bg:dark_bg)"
+renamed = "[󰗧${count} ](fg:git_ok bg:dark_bg)"
+untracked = "[${count} ](fg:git_alert bg:dark_bg)"
+deleted = "[${count} ](fg:git_alert bg:dark_bg)"
+conflicted = "[${count} ](fg:git_alert bg:dark_bg)"
+stashed = "[${count} ](fg:git_warn bg:dark_bg)"
+up_to_date = ""
+ahead = "󰞙 ${count} "
+behind = "󰞖 ${count} "
+diverged = "󰡏 ${ahead_count} ${behind_count} "
+
+[git_commit]
+format = "[\\($hash\\)]($style) [\\($tag\\)]($style)"
+style = "green"
+
+# ------------------------------------------------------------------------------
+# LANGUAGES - Two Pill Design (Text Pill + Brand Color Icon Pill)
+# ------------------------------------------------------------------------------
+
+[aws]
+symbol = ""
+format = '[](fg:dark_bg)[$symbol($profile )(\($region\) )](fg:text_light bg:dark_bg)[](fg:dark_bg) '
+
+[c]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_c bg:dark_bg)[$symbol](fg:text_light bg:lang_c)[](fg:lang_c) '
+
+[cmake]
+symbol = "󰔷"
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_cmake bg:dark_bg)[$symbol](fg:text_light bg:lang_cmake)[](fg:lang_cmake) '
+
+[conda]
+symbol = "🅒"
+format = '[](fg:dark_bg)[$environment](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_conda bg:dark_bg)[$symbol](fg:dark_bg bg:lang_conda)[](fg:lang_conda) '
+
+[dart]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_dart bg:dark_bg)[$symbol](fg:text_light bg:lang_dart)[](fg:lang_dart) '
+
+[docker_context]
+symbol = ""
+format = '[](fg:dark_bg)[$context](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_docker bg:dark_bg)[$symbol](fg:text_light bg:lang_docker)[](fg:lang_docker) '
+detect_files = ["docker-compose.yml", "docker-compose.yaml", "Dockerfile"]
+
+[elixir]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_elixir bg:dark_bg)[$symbol](fg:text_light bg:lang_elixir)[](fg:lang_elixir) '
+
+[elm]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_elm bg:dark_bg)[$symbol](fg:text_light bg:lang_elm)[](fg:lang_elm) '
+
+[golang]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_go bg:dark_bg)[$symbol](fg:text_light bg:lang_go)[](fg:lang_go) '
+
+[gradle]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:pkg_generic bg:dark_bg)[$symbol](fg:dark_bg bg:pkg_generic)[](fg:pkg_generic) '
+
+[haskell]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_haskell bg:dark_bg)[$symbol](fg:text_light bg:lang_haskell)[](fg:lang_haskell) '
+
+[helm]
+symbol = "󰠳"
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_docker bg:dark_bg)[$symbol](fg:text_light bg:lang_docker)[](fg:lang_docker) '
+
+[java]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_java bg:dark_bg)[$symbol](fg:text_light bg:lang_java)[](fg:lang_java) '
+
+[julia]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_julia bg:dark_bg)[$symbol](fg:text_light bg:lang_julia)[](fg:lang_julia) '
+
+[kubernetes]
+symbol = "󱃾"
+format = '[](fg:dark_bg)[$context( \($namespace\))](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_docker bg:dark_bg)[$symbol](fg:text_light bg:lang_docker)[](fg:lang_docker) '
+
+[lua]
+symbol = "󰢱"
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_lua bg:dark_bg)[$symbol](fg:text_light bg:lang_lua)[](fg:lang_lua) '
+
+[nodejs]
+symbol = "󰎙"
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_node bg:dark_bg)[$symbol](fg:text_light bg:lang_node)[](fg:lang_node) '
+
+[nim]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_nim bg:dark_bg)[$symbol](fg:dark_bg bg:lang_nim)[](fg:lang_nim) '
+
+[package]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:pkg_generic bg:dark_bg)[$symbol](fg:dark_bg bg:pkg_generic)[](fg:pkg_generic) '
+
+[perl]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_perl bg:dark_bg)[$symbol](fg:text_light bg:lang_perl)[](fg:lang_perl) '
+
+[php]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_php bg:dark_bg)[$symbol](fg:text_light bg:lang_php)[](fg:lang_php) '
+
+[python]
+symbol = ""
+format = '[](fg:dark_bg)[$version(\($virtualenv\) )](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_python bg:dark_bg)[$symbol](fg:text_light bg:lang_python)[](fg:lang_python) '
+
+[ruby]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_ruby bg:dark_bg)[$symbol](fg:text_light bg:lang_ruby)[](fg:lang_ruby) '
+
+[rust]
+symbol = "󱘗"
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_rust bg:dark_bg)[$symbol](fg:dark_bg bg:lang_rust)[](fg:lang_rust) '
+
+[scala]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_scala bg:dark_bg)[$symbol](fg:text_light bg:lang_scala)[](fg:lang_scala) '
+
+[swift]
+symbol = "󰛥"
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_swift bg:dark_bg)[$symbol](fg:text_light bg:lang_swift)[](fg:lang_swift) '
+
+[bun]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:pkg_generic bg:dark_bg)[$symbol](fg:dark_bg bg:pkg_generic)[](fg:pkg_generic) '
+
+[buf]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:pkg_generic bg:dark_bg)[$symbol](fg:dark_bg bg:pkg_generic)[](fg:pkg_generic) '
+
+[terraform]
+symbol = "󱁢"
+format = '[](fg:dark_bg)[$workspace](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_terraform bg:dark_bg)[$symbol](fg:text_light bg:lang_terraform)[](fg:lang_terraform) '
+
+[zig]
+symbol = ""
+format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_zig bg:dark_bg)[$symbol](fg:dark_bg bg:lang_zig)[](fg:lang_zig) '

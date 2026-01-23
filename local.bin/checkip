@@ -1,0 +1,72 @@
+#!/bin/bash
+
+# --- Configuration ---
+CACHE_FILE="/tmp/starship_ip_cache"
+CACHE_TTL=120 # 2 minutes in seconds
+TIMEOUT=2     # Timeout per request in seconds
+
+# --- Helpers ---
+
+# Check if we have a default route (basic network connectivity)
+has_network() {
+    ip route get 1.1.1.1 > /dev/null 2>&1
+}
+
+get_file_age() {
+    local file=$1
+    local current_time=$(date +%s)
+    local file_time=$(stat -c %Y "$file" 2>/dev/null)
+    
+    if [ -z "$file_time" ]; then
+        echo -1
+    else
+        echo $((current_time - file_time))
+    fi
+}
+
+fetch_ip() {
+    # Try 3 providers in order
+    # curl -s --connect-timeout $TIMEOUT ip.sb --resolve ip.sb:80:104.26.12.31 || \
+    curl -s --connect-timeout $TIMEOUT ifconfig.me --resolve ifconfig.me:80:34.160.111.145
+    # curl -s --connect-timeout $TIMEOUT v4.ident.me --resolve v4.ident.me:80:65.108.151.63
+}
+
+# --- Main Logic ---
+
+# 1. Immediate Fail: If no network interface has a route, clear cache and exit
+if ! has_network; then
+    [ -f "$CACHE_FILE" ] && rm "$CACHE_FILE"
+    echo "No Net"
+    exit 2
+fi
+
+# 2. Check Cache
+file_age=$(get_file_age "$CACHE_FILE")
+
+# If cache exists and is younger than TTL, use it
+if [ "$file_age" -ne -1 ] && [ "$file_age" -lt "$CACHE_TTL" ]; then
+    cat "$CACHE_FILE"
+    exit 0
+fi
+
+# 3. Fetch New IP
+NEW_IP=$(fetch_ip)
+
+if [ -n "$NEW_IP" ]; then
+    # Validate result is actually an IP (basic check to avoid html errors)
+    if [[ "$NEW_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$NEW_IP" > "$CACHE_FILE"
+        echo "$NEW_IP"
+    else
+        echo "Err"
+        exit 1
+    fi
+else
+    # Keep old cache if fetch failed, but maybe append a warning or just output old
+    if [ -f "$CACHE_FILE" ]; then
+        cat "$CACHE_FILE"
+    else
+        echo "Offline"
+        exit 
+    fi
+fi
