@@ -1,22 +1,14 @@
-# Enable Powerlevel10k instant prompt. Should stay close to the top of ~/.zshrc.
-# Initialization code that may require console input (password prompts, [y/n]
-# confirmations, etc.) must go above this block; everything else may go below.
-#if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
-#  source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
-#fi
-
 # If you come from bash you might have to change your $PATH.
-# export PATH=$HOME/bin:$HOME/.local/bin:/usr/local/bin:$PATH
+export PATH=$HOME/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:$PATH
 
 # Path to your Oh My Zsh installation.
 export ZSH="$HOME/.oh-my-zsh"
-export PATH=$PATH:"$HOME/.local/bin:$HOME/.cargo/bin"
 
 # Set name of the theme to load --- if set to "random", it will
 # load a random theme each time Oh My Zsh is loaded, in which case,
 # to know which specific one was loaded, run: echo $RANDOM_THEME
 # See https://github.com/ohmyzsh/ohmyzsh/wiki/Themes
-#ZSH_THEME="powerlevel10k/powerlevel10k"
+ZSH_THEME=""
 
 # Set list of themes to pick from when loading at random
 # Setting this variable when ZSH_THEME=random will cause zsh to load
@@ -78,21 +70,54 @@ export PATH=$PATH:"$HOME/.local/bin:$HOME/.cargo/bin"
 # Custom plugins may be added to $ZSH_CUSTOM/plugins/
 # Example format: plugins=(rails git textmate ruby lighthouse)
 # Add wisely, as too many plugins slow down shell startup.
-plugins=(
-  git
-  zsh-history-substring-search
-  zsh-syntax-highlighting
-  zsh-autosuggestions
-  zsh-autocomplete
-  # bundler
-  # dotenv
-  # macos
-  # rake
-  # rbenv
-  # ruby
-  fzf
-)
 
+
+######### NOTE: You may disable/enable lines below: #########
+
+HOME_DIR=$HOME
+if [ ! -d "${HOME_DIR}/.oh-my-zsh/custom/plugins/zsh-autosuggestions" ]; then
+    git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions.git "${HOME_DIR}/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
+    if [ $? -eq 0 ]; then
+        show_success "zsh-autosuggestions plugin installed successfully"
+    else
+        show_error "zsh-autosuggestions installation failed"
+    fi
+fi
+if [ ! -d "${HOME_DIR}/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting" ]; then
+    git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting.git "${HOME_DIR}/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting"
+    if [ $? -eq 0 ]; then
+        show_success "zsh-syntax-highlighting plugin installed successfully"
+    else
+        show_error "zsh-syntax-highlighting installation failed"
+    fi
+fi
+if [ ! -d "${HOME_DIR}/.oh-my-zsh/custom/plugins/zsh-history-substring-search" ]; then
+    git clone --depth=1 https://github.com/zsh-users/zsh-history-substring-search.git "${HOME_DIR}/.oh-my-zsh/custom/plugins/zsh-history-substring-search"
+    if [ $? -eq 0 ]; then
+        show_success "zsh-history-substring-search plugin installed successfully"
+    else
+        show_error "zsh-history-substring-search installation failed"
+    fi
+fi
+if [ ! -d "${HOME_DIR}/.oh-my-zsh/custom/plugins/zsh-autocomplete" ]; then
+    git clone --depth=1 https://github.com/marlonrichert/zsh-autocomplete.git "${HOME_DIR}/.oh-my-zsh/custom/plugins/zsh-autocomplete"
+    if [ $? -eq 0 ]; then
+        show_success "zsh-autocomplete plugin installed successfully"
+    else
+        show_error "zsh-autocomplete installation failed"
+    fi
+fi
+
+#############################################################
+#
+plugins=(
+    git
+    zsh-history-substring-search
+    zsh-syntax-highlighting
+    zsh-autosuggestions
+    zsh-autocomplete
+    fzf
+)
 
 source $ZSH/oh-my-zsh.sh
 
@@ -105,13 +130,13 @@ source $ZSH/oh-my-zsh.sh
 
 # Preferred editor for local and remote sessions
 # if [[ -n $SSH_CONNECTION ]]; then
-#   export EDITOR='vim'
+   export EDITOR='vim'
 # else
-#   export EDITOR='mvim'
+#   export EDITOR='nvim'
 # fi
 
 # Compilation flags
-# export ARCHFLAGS="-arch x86_64"
+# export ARCHFLAGS="-arch $(uname -m)"
 
 # Set personal aliases, overriding those provided by Oh My Zsh libs,
 # plugins, and themes. Aliases can be placed here, though Oh My Zsh
@@ -122,63 +147,130 @@ source $ZSH/oh-my-zsh.sh
 # For a full list of active aliases, run `alias`.
 #
 # Example aliases
-EDITOR='micro'
-alias py="python3"
-alias cl="clear"
-alias vid="neovide --maximized"
-alias vi="nvim"
-alias svi="sudo nvim"
-alias rawcat="/bin/cat"
-#alias cat="batcat"
-alias rawls="/bin/ls"
-alias ls="exa --icons"
-alias la="ls -algi"
-alias l="ls -lahgi"
-alias lt="ls --tree"
-alias gitlog="git log --all --color --decorate --graph"
-alias zshconfig="vi ~/.zshrc"
-alias tlmgr='/usr/share/texmf-dist/scripts/texlive/tlmgr.pl --usermode'
+# alias zshconfig="mate ~/.zshrc"
+# alias ohmyzsh="mate ~/.oh-my-zsh"i
+
+alias cl='clear'
+
+alias py='python3'
+
+alias k='kubectl'
+alias kg='k get'
+alias kgp='k get pods'
+alias kgs='k get services'
+alias kgn='k get nodes'
+alias kd='k describe'
+alias kdp='k describe pod'
+alias kdn='k describe node'
+alias kex='k exec -it'
+alias kl='k logs'
+alias kdel='k delete'
+
+alias g='git'
+alias glog='git log --graph --color --decorate --oneline'
+alias gitlog='git log --all --color --decorate --graph'
+
+alias grep='grep --color=auto'
+
+alias svi='sudo vim'
+alias ls='eza --icons'
+alias la='ls -algi'
+alias l='ls -lahgi'
+alias lt='ls --tree'
+
 alias hex='hexdump --canonical'
-alias gdbd='gdb -quiet -ex "layout asm" -ex "break main" -ex "run"'
 alias zz='zip -qr9T "$(basename "$(pwd)").zip" .'
-alias wpt='warp-terminal .'
-alias lsusb='cyme -l'
-alias vrst='systemctl --user restart msocksvpn.service'
-alias vsts='systemctl --user status msocksvpn.service'
+alias rsyncr='rsync -rvzP'
 
+alias sctl='sudo systemctl'
+alias sctls='sctl status'
+alias sctlr='sctl restart'
 
-# An example: looop "ls -lah" "false" 5
-func looop(){
-  while true; do
-    $1 || clear
-    zsh -c "$3" || break
-    sleep $2
-  done
+alias pls='sudo $(fc -ln -1)'
+
+alias -g G='| grep'
+alias -g L='| less'
+
+###############################################
+
+extract() {
+  local archive="$1"
+  local dest="${2:-.}"
+
+  if [ -f "$archive" ]; then
+    # 1. Resolve absolute path of the archive
+    # (We need this because if we 'cd' into $dest, a relative path like '../file.zip' breaks)
+    if [[ "$archive" != /* ]]; then
+      archive="$PWD/$archive"
+    fi
+
+    # 2. Create and Enter destination
+    mkdir -p "$dest"
+    cd "$dest"
+
+    # 3. Extract using standard commands (no complex flags needed)
+    case "$archive" in
+      *.tar.bz2)   tar xjf "$archive"   ;;
+      *.tar.gz)    tar xzf "$archive"   ;;
+      *.bz2)       bunzip2 "$archive"   ;;
+      *.rar)       unrar x "$archive"   ;;
+      *.gz)        gunzip "$archive"    ;;
+      *.tar)       tar xf "$archive"    ;;
+      *.tbz2)      tar xjf "$archive"   ;;
+      *.tgz)       tar xzf "$archive"   ;;
+      *.zip)       unzip "$archive"     ;;
+      *.Z)         uncompress "$archive";;
+      *.7z)        7z x "$archive"      ;;
+      *)           echo "Unknown format: $archive" ;;
+    esac
+
+    # 4. Go back to original folder (silently)
+    cd - > /dev/null
+  else
+    echo "'$archive' is not a valid file"
+  fi
 }
 
+cheat() {
+    curl "cheat.sh/$1"
+}
 
-# . . .
-# Download Znap, if it's not there yet.
-#[[ -r ~/zsh/znap/znap.zsh ]] ||
-#   git clone --depth 1 -- \
-#        https://github.com/marlonrichert/zsh-snap.git ~/zsh/znap
-#source ~/zsh/znap/znap.zsh  # Start Znap
-#source marlonrichert/zsh-autocomplete
-# To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
-[[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
+server() {
+    local port="${1:-8000}"
+    # Check if python3 is available (most likely)
+    if command -v python3 &>/dev/null; then
+        python3 -m http.server "$port"
+    # Fallback for older python2 systems
+    elif command -v python &>/dev/null; then
+        python -m SimpleHTTPServer "$port"
+    else
+        echo "Python is not installed."
+    fi
+}
 
-# git clone --depth=1 https://github.com/romkatv/powerlevel10k.git ${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k
-# git clone https://github.com/zsh-users/zsh-history-substring-search ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-history-substring-search
-# git clone https://github.com/zsh-users/zsh-syntax-highlighting ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting
-# git clone https://github.com/marlonrichert/zsh-autocomplete ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autocomplete
-# git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+bak() {
+  local file="$1"
+  if [ -f "$file" ] || [ -d "$file" ]; then
+    local timestamp=$(date +%Y%m%d_%H%M)
+    cp -r "$file" "$file.$timestamp"
+    echo "Backup created: $file.$timestamp"
+  else
+    echo "Error: File '$file' not found."
+  fi
+}
 
+f() {
+  find . -name "*$1*"
+}
+
+whop() {
+    # -i: internet files, -P: no port names, -n: no host names
+    sudo lsof -i :"$1" -P -n
+}
+
+###############################################
 bindkey '^ ' autosuggest-accept
 
-# source ~/zsh/plugins/zsh-autocomplete/zsh-autocomplete.plugin.zsh
-# source ~/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh
-___MY_VMOPTIONS_SHELL_FILE="${HOME}/.jetbrains.vmoptions.sh"; if [ -f "${___MY_VMOPTIONS_SHELL_FILE}" ]; then . "${___MY_VMOPTIONS_SHELL_FILE}"; fi
-export PATH=~/.npm-global/bin:$PATH
+source <(zoxide init zsh)
+source <(starship init zsh)
 
-eval "$(zoxide init zsh)"
-eval "$(starship init zsh)"
