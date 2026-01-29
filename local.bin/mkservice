@@ -1,0 +1,113 @@
+#!/bin/bash
+
+# ==============================================================================
+# AUTOMATED SYSTEMD SERVICE CREATOR
+# ==============================================================================
+
+# 1. ROOT PRIVILEGE CHECK
+# Systemd requires root permissions to write to /etc/systemd/system/
+if [ "$EUID" -ne 0 ]; then
+  echo "❌ Error: This script must be run as root (use sudo)."
+  exit 1
+fi
+
+echo "=========================================="
+echo "   Linux Systemd Service Creator Wizard   "
+echo "=========================================="
+
+# 2. GATHER INPUTS
+# Get the service name (remove spaces to ensure valid filenames)
+read -p "Enter Service Name (e.g., my-backup-daemon): " RAW_NAME
+SERVICE_NAME=${RAW_NAME// /_} # Replaces spaces with underscores
+
+read -p "Enter Service Description (e.g., 'Runs daily backups'): " SERVICE_DESC
+
+# Define paths
+SCRIPT_DIR="/usr/local/bin"
+SCRIPT_PATH="$SCRIPT_DIR/$SERVICE_NAME.sh"
+SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
+
+# 3. CREATE THE EXECUTABLE SCRIPT
+echo "------------------------------------------"
+echo "Creating script file at: $SCRIPT_PATH"
+
+# Create a shebang header if the file doesn't exist
+if [ ! -f "$SCRIPT_PATH" ]; then
+    echo "#!/bin/bash" > "$SCRIPT_PATH"
+    echo "# Description: $SERVICE_DESC" >> "$SCRIPT_PATH"
+    echo "" >> "$SCRIPT_PATH"
+    echo "# Your code here..." >> "$SCRIPT_PATH"
+    echo "# (Example: while true; do echo 'Running'; sleep 60; done)" >> "$SCRIPT_PATH"
+fi
+
+# Make it executable
+chmod +x "$SCRIPT_PATH"
+
+# 4. OPEN VIM
+echo "Opening vim for you to write your script..."
+read -p "Press [Enter] to launch vim..."
+vim "$SCRIPT_PATH"
+
+# Check if file is empty or user exited without saving useful code
+if [ ! -s "$SCRIPT_PATH" ]; then
+    echo "⚠ Warning: The script file is empty."
+    read -p "Continue creating service anyway? (y/n): " CONFIRM
+    if [[ "$CONFIRM" != "y" ]]; then
+        echo "Aborting."
+        exit 1
+    fi
+fi
+
+# 5. GENERATE SYSTEMD SERVICE FILE
+echo "------------------------------------------"
+echo "Generating systemd service file at: $SERVICE_FILE"
+
+cat <<EOF > "$SERVICE_FILE"
+[Unit]
+Description=$SERVICE_DESC
+After=network.target
+
+[Service]
+# The script execution
+ExecStart=$SCRIPT_PATH
+
+# Restart policy: automatically restart if it crashes
+Restart=on-failure
+RestartSec=5s
+
+# Standard output/error logging (viewable via journalctl)
+StandardOutput=journal
+StandardError=journal
+
+# User to run the service as (Defaults to root, change if needed)
+User=root
+Group=root
+
+[Install]
+# Start automatically on boot
+WantedBy=multi-user.target
+EOF
+
+# 6. RELOAD AND START
+echo "------------------------------------------"
+echo "Registering with systemctl..."
+
+# Reload the systemd daemon to recognize the new file
+systemctl daemon-reload
+
+# Enable it to start on boot
+systemctl enable "$SERVICE_NAME.service"
+
+# Start the service now
+systemctl start "$SERVICE_NAME.service"
+
+# 7. STATUS CHECK
+echo "------------------------------------------"
+echo "Service status:"
+systemctl status "$SERVICE_NAME.service" --no-pager
+
+echo ""
+echo "✅ Success! Your service is running."
+echo "   - View logs: sudo journalctl -u $SERVICE_NAME -f"
+echo "   - Edit script: sudo vim $SCRIPT_PATH"
+echo "   - Restart: sudo systemctl restart $SERVICE_NAME"
