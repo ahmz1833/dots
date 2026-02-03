@@ -1,5 +1,5 @@
 # If you come from bash you might have to change your $PATH.
-export PATH=$HOME/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:$PATH
+export PATH=${KREW_ROOT:-$HOME/.krew}/bin:$HOME/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:$PATH
 
 # Path to your Oh My Zsh installation.
 export ZSH="$HOME/.oh-my-zsh"
@@ -155,6 +155,7 @@ alias cl='clear'
 alias py='python3'
 
 alias k='kubectl'
+alias kctx='k config use-context'
 alias kg='k get'
 alias kgp='k get pods'
 alias kgs='k get services'
@@ -271,6 +272,7 @@ whop() {
 ###############################################
 bindkey '^ ' autosuggest-accept
 
-source <(zoxide init zsh)
-source <(starship init zsh)
+command -v zoxide   >/dev/null 2>&1 && source <(zoxide init zsh)
+command -v starship >/dev/null 2>&1 && source <(starship init zsh)
 
+[ -f "$HOME/.zshrc.mine" ] && source $HOME/.zshrc.mine

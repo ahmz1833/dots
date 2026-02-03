@@ -368,6 +368,7 @@ symbol = ""
 format = '[](fg:dark_bg)[$version](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_julia bg:dark_bg)[$symbol](fg:text_light bg:lang_julia)[](fg:lang_julia) '
 
 [kubernetes]
+disabled = false
 symbol = "󱃾"
 format = '[](fg:dark_bg)[$context( \($namespace\))](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:lang_docker bg:dark_bg)[$symbol](fg:text_light bg:lang_docker)[](fg:lang_docker) '
 
