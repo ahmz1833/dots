@@ -173,7 +173,8 @@ alias gitlog='git log --all --color --decorate --graph'
 
 alias grep='grep --color=auto'
 
-alias svi='sudo vim'
+alias svim='EDITOR=vim sudoedit'
+alias svi='svim'
 alias ls='eza --icons'
 alias la='ls -algi'
 alias l='ls -lahgi'
@@ -276,3 +277,6 @@ command -v zoxide   >/dev/null 2>&1 && source <(zoxide init zsh)
 command -v starship >/dev/null 2>&1 && source <(starship init zsh)
 
 [ -f "$HOME/.zshrc.mine" ] && source $HOME/.zshrc.mine
+
+# add Pulumi to the PATH
+export PATH=$PATH:/home/ahmz/.pulumi/bin
