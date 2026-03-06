@@ -39,8 +39,15 @@ set history=1000
 
 " UI
 set t_Co=256
+set termguicolors
 set background=dark
-colorscheme catppuccin
+
+" Graceful colorscheme fallback
+try
+    colorscheme one-monokai
+catch
+    colorscheme desert
+endtry
 
 set number
 set relativenumber
@@ -152,7 +159,6 @@ function! CopyOSC52()
     let l:osc = "\x1b]52;c;" . l:b64 . "\x07"
     if filewritable('/dev/tty')
         call writefile([l:osc], '/dev/tty', 'b')
-        echo "Copied to local clipboard via OSC52"
     else
         echo "Failed to write OSC52 to /dev/tty"
     endif
