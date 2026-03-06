@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -eo pipefail
 
 HOME_DIR="$HOME"
 DOTS_DIR="${HOME_DIR}/dots"
@@ -9,6 +9,7 @@ GITHUB_REPO="dots"
 FETCH_MODE="interactive"
 S3_BUCKET_URL="https://s3.ahmz.ir/dots"
 SKIP_SUDO=0
+HAS_CHANGED=0
 
 for arg in "$@"; do
     if [ "$arg" = "--no-sudo" ]; then
@@ -21,6 +22,18 @@ show_message()  { echo -e "\033[1;37m[>>]\033[0m $1"; }
 show_success()  { echo -e "\033[1;32m[OK]\033[0m $1"; }
 show_error()    { echo -e "\033[1;31m[XX]\033[0m $1"; exit 1; }
 
+run_subscript() {
+    set +e
+    "$@"
+    local rc=$?
+    set -e
+    if [ $rc -eq 0 ]; then
+        HAS_CHANGED=1
+    elif [ $rc -ne 10 ]; then
+        show_error "Script failed with exit code $rc: $*"
+    fi
+}
+
 fetch_dots() {
     local mode="$1"
     
@@ -28,18 +41,26 @@ fetch_dots() {
         if [ -d "$DOTS_DIR/.git" ]; then
             if [ "$mode" = "ssh" ] || [ "$mode" = "https" ]; then
                 show_progress "Updating existing git repository..."
-                git -C "$DOTS_DIR" pull || show_error "Failed to pull git repository."
+                local pull_output
+                pull_output=$(git -C "$DOTS_DIR" pull 2>&1) || show_error "Failed to pull git repository."
+                
+                if [[ "$pull_output" != *"Already up to date."* ]]; then
+                    HAS_CHANGED=1
+                    show_message "Repository updated."
+                fi
                 return 0
             else
                 show_message "Git repo exists, but using tarball mode. Overwriting files..."
+                HAS_CHANGED=1
             fi
         else
             if [ "$mode" = "ssh" ] || [ "$mode" = "https" ]; then
-                show_warning "Directory exists but is not a git repository."
                 show_progress "Backing up to dots.bak and cloning freshly..."
                 mv "$DOTS_DIR" "${DOTS_DIR}.bak.$(date +%s)"
+                HAS_CHANGED=1
             else
                 show_progress "Updating existing directory from tarball..."
+                HAS_CHANGED=1
             fi
         fi
     fi
@@ -49,23 +70,27 @@ fetch_dots() {
             if [ ! -d "$DOTS_DIR" ]; then
                 show_progress "Cloning via SSH..."
                 git clone "git@github.com:${GITHUB_USER}/${GITHUB_REPO}.git" "$DOTS_DIR"
+                HAS_CHANGED=1
             fi
             ;;
         https)
             if [ ! -d "$DOTS_DIR" ]; then
                 show_progress "Cloning via HTTPS..."
                 git clone "https://github.com/${GITHUB_USER}/${GITHUB_REPO}.git" "$DOTS_DIR"
+                HAS_CHANGED=1
             fi
             ;;
         raw)
             show_progress "Downloading tarball from GitHub (Raw)..."
             mkdir -p "$DOTS_DIR"
             curl -fsSL "https://github.com/${GITHUB_USER}/${GITHUB_REPO}/archive/refs/heads/main.tar.gz" | tar -xz -C "$DOTS_DIR" --strip-components=1
+            HAS_CHANGED=1
             ;;
         s3)
             show_progress "Downloading tarball from S3..."
             mkdir -p "$DOTS_DIR"
             curl -fsSL "${S3_BUCKET_URL}/dots.tar.gz" | tar -xz -C "$DOTS_DIR" --strip-components=1
+            HAS_CHANGED=1
             ;;
         *)
             show_error "Invalid fetch mode."
@@ -83,11 +108,16 @@ setup_scripts() {
             if [ -f "$script" ]; then
                 local script_name
                 script_name=$(basename "$script")
-                ln -sf "$script" "${bin_dir}/${script_name}"
-                show_message "Linked $script_name"
+                local target_link="${bin_dir}/${script_name}"
+                
+                if [ ! -L "$target_link" ] || [ "$(readlink "$target_link")" != "$script" ]; then
+                    ln -sf "$script" "$target_link"
+                    show_message "Linked $script_name"
+                    HAS_CHANGED=1
+                fi
             fi
         done
-        show_success "Scripts symlinked."
+        show_success "Scripts symlink check complete."
     else
         show_message "No scripts directory found. Skipping."
     fi
@@ -96,19 +126,24 @@ setup_scripts() {
 # --- Main Logic ---
 
 if [ "$FETCH_MODE" = "interactive" ]; then
-    echo "Select download method for dotfiles:"
-    echo "1) SSH (git clone git@github...)"
-    echo "2) HTTPS (git clone https://github...)"
-    echo "3) Raw (GitHub Tarball)"
-    echo "4) S3 (S3 Tarball)"
-    read -rp "Enter choice [1-4] (default 2): " choice
+    if [ -t 0 ]; then
+        echo "Select download method for dotfiles:"
+        echo "1) SSH (git clone git@github...)"
+        echo "2) HTTPS (git clone https://github...)"
+        echo "3) Raw (GitHub Tarball)"
+        echo "4) S3 (S3 Tarball)"
+        read -rp "Enter choice [1-4] (default 2): " choice
 
-    case "$choice" in
-        1) fetch_dots "ssh" ;;
-        3) fetch_dots "raw" ;;
-        4) fetch_dots "s3" ;;
-        *) fetch_dots "https" ;;
-    esac
+        case "$choice" in
+            1) fetch_dots "ssh" ;;
+            3) fetch_dots "raw" ;;
+            4) fetch_dots "s3" ;;
+            *) fetch_dots "https" ;;
+        esac
+    else
+        show_message "Non-interactive environment detected. Defaulting to HTTPS mode."
+        fetch_dots "https"
+    fi
 elif [ "$FETCH_MODE" = "s3" ]; then
     show_message "S3 mode forced. Fetching from S3 bucket..."
     fetch_dots "s3"
@@ -123,18 +158,24 @@ fi
 
 show_progress "Executing Vim install script..."
 if [ -f "${DOTS_DIR}/vim/install.sh" ]; then
-    bash "${DOTS_DIR}/vim/install.sh"
+    run_subscript bash "${DOTS_DIR}/vim/install.sh"
 else
     show_message "Vim install script not found. Skipping."
 fi
 
 show_progress "Executing Shell install script..."
 if [ -f "${DOTS_DIR}/shell/install.sh" ]; then
-    zsh "${DOTS_DIR}/shell/install.sh" $INSTALL_ARGS
+    run_subscript zsh "${DOTS_DIR}/shell/install.sh" $INSTALL_ARGS
 else
     show_message "Shell install script not found. Skipping."
 fi
 
 setup_scripts
 
-show_success "Bootstrap complete!"
+if [ "$HAS_CHANGED" -eq 1 ]; then
+    show_success "Bootstrap complete! (Changes were made)"
+    exit 0
+else
+    show_success "Bootstrap complete! (No changes required)"
+    exit 10
+fi

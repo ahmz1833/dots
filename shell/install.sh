@@ -4,6 +4,7 @@ set -e
 export PATH="$PATH:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:${HOME}/.local/bin"
 HOME_DIR="$HOME"
 SKIP_SUDO=0
+HAS_CHANGED=0
 
 for arg in "$@"; do
     if [ "$arg" = "--no-sudo" ]; then
@@ -18,19 +19,32 @@ show_warning()  { echo -e "\033[1;33m[!!]\033[0m $1"; }
 show_error()    { echo -e "\033[1;31m[XX]\033[0m $1"; }
 
 install_base_packages() {
-    show_progress "Installing base packages..."
-    local pkgs="zsh curl git ripgrep"
+    local -a pkgs=(zsh curl git ripgrep)
+    local needs_install=0
     
-    if command -v apt-get >/dev/null 2>&1; then
-        sudo apt-get update -y && sudo apt-get install -y $pkgs
-    elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y $pkgs
-    elif command -v pacman >/dev/null 2>&1; then
-        sudo pacman -S --noconfirm $pkgs
-    elif command -v brew >/dev/null 2>&1; then
-        brew install $pkgs
+    for cmd in zsh curl git rg; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            needs_install=1
+            break
+        fi
+    done
+    
+    if [ "$needs_install" -eq 1 ]; then
+        show_progress "Installing base packages..."
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update -y && sudo apt-get install -y "${pkgs[@]}"
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y "${pkgs[@]}"
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -S --noconfirm "${pkgs[@]}"
+        elif command -v brew >/dev/null 2>&1; then
+            brew install "${pkgs[@]}"
+        else
+            show_warning "Package manager not supported."
+        fi
+        HAS_CHANGED=1
     else
-        show_warning "Package manager not supported."
+        show_success "Base packages already installed."
     fi
 }
 
@@ -50,8 +64,13 @@ install_fzf() {
     show_progress "Installing fzf..."
     if [ ! -d "${HOME_DIR}/.fzf" ]; then
         git clone --depth 1 https://github.com/junegunn/fzf.git "${HOME_DIR}/.fzf"
+        HAS_CHANGED=1
     else
-        git -C "${HOME_DIR}/.fzf" pull
+        local pull_output
+        pull_output=$(git -C "${HOME_DIR}/.fzf" pull 2>&1)
+        if [[ "$pull_output" != *"Already up to date."* ]]; then
+            HAS_CHANGED=1
+        fi
     fi
     "${HOME_DIR}/.fzf/install" --bin --no-update-rc --no-bash --no-zsh --no-fish
     
@@ -63,6 +82,7 @@ install_fzf() {
 install_zoxide() {
     show_progress "Installing zoxide..."
     curl -sS https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh
+    HAS_CHANGED=1
     show_success "zoxide installed."
 }
 
@@ -85,6 +105,7 @@ install_eza() {
     mkdir -p "${HOME_DIR}/.local/bin"
     mv "${temp_dir}/eza" "${HOME_DIR}/.local/bin/eza"
     rm -rf "$temp_dir"
+    HAS_CHANGED=1
     show_success "eza installed."
 }
 
@@ -99,10 +120,12 @@ link_file() {
             show_warning "Backing up $link_name..."
             mv "$link_name" "${link_name}.old"
             ln -sf "$target" "$link_name"
+            HAS_CHANGED=1
             show_success "Symlinked $link_name."
         fi
     else
         ln -sf "$target" "$link_name"
+        HAS_CHANGED=1
         show_success "Symlinked $link_name."
     fi
 }
@@ -119,27 +142,28 @@ elif ! check_fzf_version; then
     show_warning "fzf outdated. Reinstalling..."
     install_fzf
 else
-    show_success "fzf installed."
+    show_success "fzf up to date."
 fi
 
 if ! command -v zoxide >/dev/null 2>&1; then
     install_zoxide
 else
-    show_success "zoxide installed."
+    show_success "zoxide already installed."
 fi
 
 if ! command -v eza >/dev/null 2>&1; then
     install_eza
 else
-    show_success "eza installed."
+    show_success "eza already installed."
 fi
 
 if [ ! -d "${HOME_DIR}/.oh-my-zsh" ]; then
     show_progress "Installing oh-my-zsh..."
     RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+    HAS_CHANGED=1
     show_success "oh-my-zsh installed."
 else
-    show_success "oh-my-zsh installed."
+    show_success "oh-my-zsh already installed."
 fi
 
 if ! command -v starship >/dev/null 2>&1; then
@@ -150,9 +174,10 @@ if ! command -v starship >/dev/null 2>&1; then
     else
         curl -sS https://starship.rs/install.sh | sh -s -- -y
     fi
+    HAS_CHANGED=1
     show_success "starship installed."
 else
-    show_success "starship installed."
+    show_success "starship already installed."
 fi
 
 show_progress "Setting up symlinks..."
@@ -172,10 +197,17 @@ else
         else
             chsh -s "$ZSH_PATH"
         fi
+        HAS_CHANGED=1
         show_success "Shell changed."
     else
-        show_success "Shell already zsh."
+        show_success "Shell already set to zsh."
     fi
 fi
 
-show_success "Shell setup complete."
+if [ "$HAS_CHANGED" -eq 1 ]; then
+    show_success "Shell setup complete! (Changes were made)"
+    exit 0
+else
+    show_success "Shell setup complete! (No changes required)"
+    exit 10
+fi

@@ -1,14 +1,14 @@
 #!/bin/bash
 
-set -e
+set -eo pipefail
 
 HOME_DIR="$HOME"
+HAS_CHANGED=0
 
 echo "[..] Setting up Vim configuration..."
 
 mkdir -p "${HOME_DIR}/.vim"
 
-# Helper function to link vim assets
 link_vim_asset() {
     local target="$1"
     local link_name="$2"
@@ -22,14 +22,22 @@ link_vim_asset() {
             mv "$link_name" "${link_name}.old"
             ln -sf "$target" "$link_name"
             echo "[OK] Symlinked $link_name"
+            HAS_CHANGED=1
         fi
     else
         ln -sf "$target" "$link_name"
         echo "[OK] Symlinked $link_name"
+        HAS_CHANGED=1
     fi
 }
 
 link_vim_asset "${HOME_DIR}/dots/vim/.vimrc" "${HOME_DIR}/.vimrc"
 link_vim_asset "${HOME_DIR}/dots/vim/colors" "${HOME_DIR}/.vim/colors"
 
-echo "[OK] Vim configuration setup complete."
+if [ "$HAS_CHANGED" -eq 1 ]; then
+    echo "[OK] Vim configuration setup complete. (Changes were made)"
+    exit 0
+else
+    echo "[OK] Vim configuration setup complete. (No changes required)"
+    exit 10
+fi
