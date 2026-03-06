@@ -130,7 +130,7 @@ fi
 
 show_progress "Executing Shell install script..."
 if [ -f "${DOTS_DIR}/shell/install.sh" ]; then
-    bash "${DOTS_DIR}/shell/install.sh" $INSTALL_ARGS
+    zsh "${DOTS_DIR}/shell/install.sh" $INSTALL_ARGS
 else
     show_message "Shell install script not found. Skipping."
 fi

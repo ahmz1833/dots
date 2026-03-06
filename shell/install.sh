@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env zsh
 
 set -e
 
@@ -62,7 +62,7 @@ install_fzf() {
 
 install_zoxide() {
     show_progress "Installing zoxide..."
-    curl -sS https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | bash
+    curl -sS https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh
     show_success "zoxide installed."
 }
 
