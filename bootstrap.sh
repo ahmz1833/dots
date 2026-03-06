@@ -8,6 +8,13 @@ GITHUB_USER="ahmz1833"
 GITHUB_REPO="dots"
 FETCH_MODE="interactive"
 S3_BUCKET_URL="https://s3.ahmz.ir/dots"
+SKIP_SUDO=0
+
+for arg in "$@"; do
+    if [ "$arg" = "--no-sudo" ]; then
+        SKIP_SUDO=1
+    fi
+done
 
 show_progress() { echo -e "\033[1;34m[..]\033[0m $1"; }
 show_message()  { echo -e "\033[1;37m[>>]\033[0m $1"; }
@@ -16,23 +23,39 @@ show_error()    { echo -e "\033[1;31m[XX]\033[0m $1"; exit 1; }
 
 fetch_dots() {
     local mode="$1"
-
+    
     if [ -d "$DOTS_DIR" ]; then
-        show_message "Directory $DOTS_DIR already exists. Pulling latest changes if git repo..."
         if [ -d "$DOTS_DIR/.git" ]; then
-            git -C "$DOTS_DIR" pull || show_error "Failed to pull git repository."
+            if [ "$mode" = "ssh" ] || [ "$mode" = "https" ]; then
+                show_progress "Updating existing git repository..."
+                git -C "$DOTS_DIR" pull || show_error "Failed to pull git repository."
+                return 0
+            else
+                show_message "Git repo exists, but using tarball mode. Overwriting files..."
+            fi
+        else
+            if [ "$mode" = "ssh" ] || [ "$mode" = "https" ]; then
+                show_warning "Directory exists but is not a git repository."
+                show_progress "Backing up to dots.bak and cloning freshly..."
+                mv "$DOTS_DIR" "${DOTS_DIR}.bak.$(date +%s)"
+            else
+                show_progress "Updating existing directory from tarball..."
+            fi
         fi
-        return 0
     fi
 
     case "$mode" in
         ssh)
-            show_progress "Cloning via SSH..."
-            git clone "git@github.com:${GITHUB_USER}/${GITHUB_REPO}.git" "$DOTS_DIR"
+            if [ ! -d "$DOTS_DIR" ]; then
+                show_progress "Cloning via SSH..."
+                git clone "git@github.com:${GITHUB_USER}/${GITHUB_REPO}.git" "$DOTS_DIR"
+            fi
             ;;
         https)
-            show_progress "Cloning via HTTPS..."
-            git clone "https://github.com/${GITHUB_USER}/${GITHUB_REPO}.git" "$DOTS_DIR"
+            if [ ! -d "$DOTS_DIR" ]; then
+                show_progress "Cloning via HTTPS..."
+                git clone "https://github.com/${GITHUB_USER}/${GITHUB_REPO}.git" "$DOTS_DIR"
+            fi
             ;;
         raw)
             show_progress "Downloading tarball from GitHub (Raw)..."
@@ -93,6 +116,11 @@ else
     fetch_dots "$FETCH_MODE"
 fi
 
+INSTALL_ARGS=""
+if [ "$SKIP_SUDO" -eq 1 ]; then
+    INSTALL_ARGS="--no-sudo"
+fi
+
 show_progress "Executing Vim install script..."
 if [ -f "${DOTS_DIR}/vim/install.sh" ]; then
     bash "${DOTS_DIR}/vim/install.sh"
@@ -102,7 +130,7 @@ fi
 
 show_progress "Executing Shell install script..."
 if [ -f "${DOTS_DIR}/shell/install.sh" ]; then
-    bash "${DOTS_DIR}/shell/install.sh"
+    bash "${DOTS_DIR}/shell/install.sh" $INSTALL_ARGS
 else
     show_message "Shell install script not found. Skipping."
 fi
