@@ -50,8 +50,7 @@ fetch_dots() {
                 fi
                 return 0
             else
-                show_message "Git repo exists, but using tarball mode. Overwriting files..."
-                HAS_CHANGED=1
+                show_message "Git repo exists, but using tarball mode."
             fi
         else
             if [ "$mode" = "ssh" ] || [ "$mode" = "https" ]; then
@@ -59,8 +58,7 @@ fetch_dots() {
                 mv "$DOTS_DIR" "${DOTS_DIR}.bak.$(date +%s)"
                 HAS_CHANGED=1
             else
-                show_progress "Updating existing directory from tarball..."
-                HAS_CHANGED=1
+                show_progress "Checking existing directory against tarball..."
             fi
         fi
     fi
@@ -80,17 +78,39 @@ fetch_dots() {
                 HAS_CHANGED=1
             fi
             ;;
-        raw)
-            show_progress "Downloading tarball from GitHub (Raw)..."
-            mkdir -p "$DOTS_DIR"
-            curl -fsSL "https://github.com/${GITHUB_USER}/${GITHUB_REPO}/archive/refs/heads/main.tar.gz" | tar -xz -C "$DOTS_DIR" --strip-components=1
-            HAS_CHANGED=1
-            ;;
-        s3)
-            show_progress "Downloading tarball from S3..."
-            mkdir -p "$DOTS_DIR"
-            curl -fsSL "${S3_BUCKET_URL}/dots.tar.gz" | tar -xz -C "$DOTS_DIR" --strip-components=1
-            HAS_CHANGED=1
+        raw|s3)
+            local temp_dir tar_url
+            temp_dir=$(mktemp -d)
+            
+            if [ "$mode" = "raw" ]; then
+                show_progress "Downloading tarball from GitHub (Raw)..."
+                tar_url="https://github.com/${GITHUB_USER}/${GITHUB_REPO}/archive/refs/heads/main.tar.gz"
+            else
+                show_progress "Downloading tarball from S3..."
+                tar_url="${S3_BUCKET_URL}/dots.tar.gz"
+            fi
+            
+            # Download and extract to the temporary directory first
+            curl -fsSL "$tar_url" | tar -xz -C "$temp_dir" --strip-components=1
+            
+            if [ -d "$DOTS_DIR" ]; then
+                # Compare temp directory against current dots directory
+                if diff -rq --exclude=".git" "$temp_dir" "$DOTS_DIR" >/dev/null 2>&1; then
+                    show_message "Tarball contents match existing directory. No changes."
+                else
+                    show_progress "Differences found. Updating directory..."
+                    cp -a "$temp_dir/." "$DOTS_DIR/"
+                    HAS_CHANGED=1
+                fi
+            else
+                show_progress "Extracting tarball to new directory..."
+                mkdir -p "$DOTS_DIR"
+                cp -a "$temp_dir/." "$DOTS_DIR/"
+                HAS_CHANGED=1
+            fi
+            
+            # Clean up
+            rm -rf "$temp_dir"
             ;;
         *)
             show_error "Invalid fetch mode."
