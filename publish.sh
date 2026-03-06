@@ -24,6 +24,8 @@ echo "Uploading bootstrap.sh to S3..."
 s3cmd put /tmp/bootstrap_s3.sh "${S3_BUCKET}/bootstrap.sh" --acl-public
 # Install with:
 # curl -sL https://s3.ahmz.ir/dots/bootstrap.sh | bash
+# For using non-interactive and no-sudo mode:
+# curl -sL https://s3.ahmz.ir/dots/bootstrap.sh | bash -s -- --no-sudo
 
 rm dots.tar.gz
 rm /tmp/bootstrap_s3.sh

@@ -144,7 +144,12 @@ fi
 
 if ! command -v starship >/dev/null 2>&1; then
     show_progress "Installing starship..."
-    curl -sS https://starship.rs/install.sh | sh -s -- -y
+    if [ "$SKIP_SUDO" -eq 1 ]; then
+        mkdir -p "${HOME_DIR}/.local/bin"
+        curl -sS https://starship.rs/install.sh | sh -s -- -y -b "${HOME_DIR}/.local/bin"
+    else
+        curl -sS https://starship.rs/install.sh | sh -s -- -y
+    fi
     show_success "starship installed."
 else
     show_success "starship installed."
