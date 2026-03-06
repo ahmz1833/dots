@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 
 set -e
-
+PATH="$PATH:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:${HOME}/.local/bin"
 HOME_DIR="$HOME"
 SKIP_SUDO=0
 
