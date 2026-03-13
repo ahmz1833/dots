@@ -188,6 +188,8 @@ alias sctl='sudo systemctl'
 alias sctls='sctl status'
 alias sctlr='sctl restart'
 
+alias jctl="sudo journalctl -xeu"
+
 alias pls='sudo $(fc -ln -1)'
 
 alias -g G='| grep'
