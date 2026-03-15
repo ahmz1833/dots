@@ -272,6 +272,32 @@ whop() {
     sudo lsof -i :"$1" -P -n
 }
 
+##############################################
+
+pssh() {
+    if [[ $# -lt 2 ]]; then
+        echo "Usage: pssh <port> [ssh_args...]"
+        return 1
+    fi
+
+    local port="$1"
+    shift
+    local proxy_cmd=""
+
+    if nc -h 2>&1 | grep -q '\-X'; then
+        proxy_cmd="nc -X 5 -x 127.0.0.1:${port} %h %p"
+    elif command -v ncat >/dev/null 2>&1; then
+        proxy_cmd="ncat --proxy-type socks5 --proxy 127.0.0.1:${port} %h %p"
+    elif command -v connect >/dev/null 2>&1; then
+        proxy_cmd="connect -S 127.0.0.1:${port} %h %p"
+    else
+        echo "Error: Compatible proxy tool (OpenBSD nc, ncat, or connect) not found."
+        return 1
+    fi
+
+    ssh -o ProxyCommand="${proxy_cmd}" "$@"
+}
+
 ###############################################
 bindkey '^ ' autosuggest-accept
 
