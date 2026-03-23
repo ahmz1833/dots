@@ -27,8 +27,10 @@ get_file_age() {
 fetch_ip() {
     # Try 3 providers in order
     # curl -s --connect-timeout $TIMEOUT ip.sb --resolve ip.sb:80:104.26.12.31 || \
-    curl -s --connect-timeout $TIMEOUT ifconfig.me --resolve ifconfig.me:80:34.160.111.145
+    # curl -s --connect-timeout $TIMEOUT ifconfig.me --resolve ifconfig.me:80:34.160.111.145
     # curl -s --connect-timeout $TIMEOUT v4.ident.me --resolve v4.ident.me:80:65.108.151.63
+
+    curl -s --connect-timeout $TIMEOUT myip.divar.cloud --resolve myip.divar.cloud:80:185.166.104.6
 }
 
 # --- Main Logic ---
