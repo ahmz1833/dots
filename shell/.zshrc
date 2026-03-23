@@ -74,7 +74,19 @@ ZSH_THEME=""
 
 ######### NOTE: You may disable/enable lines below: #########
 
+function show_success() { echo -e "\033[32m✅ $1\033[0m" }
+function show_error() { echo -e "\033[31m❌ $1\033[0m" }
+
 HOME_DIR=$HOME
+if [ ! -d "${HOME_DIR}/.oh-my-zsh/custom/plugins/fzf-tab" ]; then
+    git clone --depth=1 https://github.com/Aloxaf/fzf-tab "${HOME_DIR}/.oh-my-zsh/custom/plugins/fzf-tab"
+    if [ $? -eq 0 ]; then
+        show_success "fzf-tab plugin installed successfully"
+    else
+        show_error "fzf-tab installation failed"
+    fi
+fi
+
 if [ ! -d "${HOME_DIR}/.oh-my-zsh/custom/plugins/zsh-autosuggestions" ]; then
     git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions.git "${HOME_DIR}/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
     if [ $? -eq 0 ]; then
@@ -112,11 +124,12 @@ fi
 #
 plugins=(
     git
+    fzf
+    fzf-tab
     zsh-history-substring-search
     zsh-syntax-highlighting
     zsh-autosuggestions
-    zsh-autocomplete
-    fzf
+    #zsh-autocomplete
 )
 
 source $ZSH/oh-my-zsh.sh
@@ -305,6 +318,3 @@ command -v zoxide   >/dev/null 2>&1 && source <(zoxide init zsh)
 command -v starship >/dev/null 2>&1 && source <(starship init zsh)
 
 [ -f "$HOME/.zshrc.mine" ] && source $HOME/.zshrc.mine
-
-# add Pulumi to the PATH
-export PATH=$PATH:/home/ahmz/.pulumi/bin
