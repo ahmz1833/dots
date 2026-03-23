@@ -193,6 +193,8 @@ alias la='ls -algi'
 alias l='ls -lahgi'
 alias lt='ls --tree'
 
+alias t='tmux new-session -A -s main'
+
 alias hex='hexdump --canonical'
 alias zz='zip -qr9T "$(basename "$(pwd)").zip" .'
 alias rsyncr='rsync -rvzP'
