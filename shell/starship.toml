@@ -85,61 +85,169 @@ $shell\
 $character"""
 
 [palettes.hybrid]
+
+## --- Base Colors ---
+#dark_bg         = "#252525"
+#text_light      = "#E8E3E3"
+#fullwhite       = "#FFFFFF"
+#fullblack       = "#000000"
+#
+## --- Tweakable Module Colors (Backgrounds/Accents) ---
+#bg_dir          = "#6791C9"     # Directory Icon background
+#bg_git          = "#81C19B"     # Git Branch Icon background
+#bg_ip_priv      = "#74b5ff"     # Private IP
+#bg_ip_pub       = "#a074de"     # Public IP
+#bg_duration     = "#FFEE55"     # Command Duration
+#
+## --- Status Colors ---
+#st_ok           = "#6ae89d"     # Status OK (0)
+#st_err          = "#f04a50"     # Status Error (non-0)
+#
+## --- Battery Colors ---
+#bat_full        = "#00CCFF"     # 100% Charged
+#bat_ok          = "#81C19B"     # 30-99%
+#bat_low         = "#FFA200"     # 10-30%
+#bat_critical    = "#B66467"     # 0-10%
+#
+## --- Git Status Colors ---
+#git_ok          = "#90deaf"     # Staged/Renamed/Committed
+#git_warn        = "#FFA200"     # Modified/Stashed
+#git_alert       = "#f07478"     # Untracked/Deleted/Conflicted
+#
+## --- Language Brand Colors ---
+## You can tweak these to change the icon color for each language
+#lang_c          = "#555555"
+#lang_cmake      = "#064F8C"
+#lang_conda      = "#8BCB48"
+#lang_dart       = "#00B4AB"
+#lang_docker     = "#2496ED"
+#lang_dotnet     = "#512BD4"
+#lang_elixir     = "#4E2A8E"
+#lang_elm        = "#60B5CC"
+#lang_go         = "#00ADD8"
+#lang_haskell    = "#5E5086"
+#lang_java       = "#B07219"
+#lang_js         = "#F7DF1E"
+#lang_julia      = "#9558B2"
+#lang_kotlin     = "#F18E33"
+#lang_lua        = "#000080"
+#lang_nim        = "#FFE953"
+#lang_node       = "#339933"
+#lang_perl       = "#39457E"
+#lang_php        = "#777BB4"
+#lang_python     = "#3776AB"
+#lang_ruby       = "#CC342D"
+#lang_rust       = "#DEA584"
+#lang_scala      = "#DC322F"
+#lang_swift      = "#F05138"
+#lang_terraform  = "#623CE4"
+#lang_zig        = "#ECA700"
+#pkg_generic     = "#E8E3E3"
+#
+## --- OS Brand Colors ---
+#os_alpaquita    = "#0D597F"
+#os_alpine       = "#0D597F"
+#os_amazon       = "#FF9900"
+#os_android      = "#3DDC84"
+#os_arch         = "#1793D1"
+#os_centos       = "#932279"
+#os_debian       = "#A81D33"
+#os_fedora       = "#51A2DA"
+#os_freebsd      = "#AB2B28"
+#os_gentoo       = "#54487A"
+#os_linux        = "#FCC624"
+#os_macos        = "#A2AAAD"
+#os_manjaro      = "#35BF5C"
+#os_mint         = "#87CF3E"
+#os_nixos        = "#5277C3"
+#os_openbsd      = "#F2CA30"
+#os_opensuse     = "#73BA25"
+#os_raspbian     = "#C51A4A"
+#os_redhat       = "#EE0000"
+#os_redhat_ent   = "#EE0000"
+#os_ubuntu       = "#E95420"
+#os_windows      = "#0078D4"
+
 # --- Base Colors ---
-dark_bg         = "#252525"
-text_light      = "#E8E3E3"
+dark_bg         = "235"
+text_light      = "254"
+fullwhite       = "15"
+fullblack       = "16"
 
 # --- Tweakable Module Colors (Backgrounds/Accents) ---
-bg_dir          = "#6791C9"     # Directory Icon background
-bg_git          = "#81C19B"     # Git Branch Icon background
-bg_ip_priv      = "#74b5ff"     # Private IP
-bg_ip_pub       = "#a074de"     # Public IP
-bg_duration     = "#FFEE55"     # Command Duration
+bg_dir          = "68"
+bg_git          = "108"
+bg_ip_priv      = "111"
+bg_ip_pub       = "134"
+bg_duration     = "227"
 
 # --- Status Colors ---
-st_ok           = "#6ae89d"     # Status OK (0)
-st_err          = "#f04a50"     # Status Error (non-0)
+st_ok           = "78"
+st_err          = "203"
 
 # --- Battery Colors ---
-bat_full        = "#00CCFF"     # 100% Charged
-bat_ok          = "#81C19B"     # 30-99%
-bat_low         = "#FFA200"     # 10-30%
-bat_critical    = "#B66467"     # 0-10%
+bat_full        = "45"
+bat_ok          = "108"
+bat_low         = "214"
+bat_critical    = "131"
 
 # --- Git Status Colors ---
-git_ok          = "#90deaf"     # Staged/Renamed/Committed
-git_warn        = "#FFA200"     # Modified/Stashed
-git_alert       = "#f07478"     # Untracked/Deleted/Conflicted
+git_ok          = "115"
+git_warn        = "214"
+git_alert       = "210"
 
 # --- Language Brand Colors ---
-# You can tweak these to change the icon color for each language
-lang_c = "#555555"
-lang_cmake = "#064F8C"
-lang_conda = "#8BCB48"
-lang_dart = "#00B4AB"
-lang_docker = "#2496ED"
-lang_dotnet = "#512BD4"
-lang_elixir = "#4E2A8E"
-lang_elm = "#60B5CC"
-lang_go = "#00ADD8"
-lang_haskell = "#5E5086"
-lang_java = "#B07219"
-lang_js = "#F7DF1E"
-lang_julia = "#9558B2"
-lang_kotlin = "#F18E33"
-lang_lua = "#000080"
-lang_nim = "#FFE953"
-lang_node = "#339933"
-lang_perl = "#39457E"
-lang_php = "#777BB4"
-lang_python = "#3776AB"
-lang_ruby = "#CC342D"
-lang_rust = "#DEA584"
-lang_scala = "#DC322F"
-lang_swift = "#F05138"
-lang_terraform = "#623CE4"
-lang_zig = "#ECA700"
-pkg_generic = "#E8E3E3"
+lang_c          = "240"
+lang_cmake      = "24"
+lang_conda      = "113"
+lang_dart       = "37"
+lang_docker     = "33"
+lang_dotnet     = "56"
+lang_elixir     = "54"
+lang_elm        = "74"
+lang_go         = "38"
+lang_haskell    = "60"
+lang_java       = "130"
+lang_js         = "220"
+lang_julia      = "133"
+lang_kotlin     = "208"
+lang_lua        = "18"
+lang_nim        = "221"
+lang_node       = "28"
+lang_perl       = "60"
+lang_php        = "103"
+lang_python     = "67"
+lang_ruby       = "160"
+lang_rust       = "180"
+lang_scala      = "160"
+lang_swift      = "203"
+lang_terraform  = "98"
+lang_zig        = "214"
+pkg_generic     = "254"
+
+# --- OS Brand Colors ---
+os_alpaquita    = "24"
+os_alpine       = "24"
+os_amazon       = "208"
+os_android      = "78"
+os_arch         = "32"
+os_centos       = "126"
+os_debian       = "124"
+os_fedora       = "74"
+os_freebsd      = "124"
+os_gentoo       = "60"
+os_linux        = "220"
+os_macos        = "248"
+os_manjaro      = "71"
+os_mint         = "113"
+os_nixos        = "68"
+os_openbsd      = "220"
+os_opensuse     = "106"
+os_raspbian     = "161"
+os_redhat       = "196"
+os_redhat_ent   = "196"
+os_ubuntu       = "202"
+os_windows      = "32"
 
 # ------------------------------------------------------------------------------
 # CORE MODULES
@@ -166,7 +274,7 @@ format = "[](fg:dark_bg)[$duration](fg:text_light bg:dark_bg)[](fg:dark_bg
 [status]
 disabled = false
 # Shows tick/cross. If error > 127 (signal), shows signal name.
-# Auto color via $style argument in format isn't fully supported for the whole pill, 
+# Auto color via $style argument in format isn't fully supported for the whole pill,
 # so we use specific symbols and success/error styles on the text.
 format = '[](fg:dark_bg)[$symbol$common_meaning$signal_name$maybe_int]($style)[](fg:dark_bg) '
 symbol = "✘ "
@@ -227,28 +335,28 @@ disabled = false
 format = "$symbol"
 
 [os.symbols]
-Alpaquita = "[](fg:#0D597F)[](bg:#0D597F fg:#FFFFFF)[](fg:#0D597F) "
-Alpine = "[](fg:#0D597F)[](bg:#0D597F fg:#FFFFFF)[](fg:#0D597F) "
-Amazon = "[](fg:#FF9900)[](bg:#FF9900 fg:black)[](fg:#FF9900) "
-Android = "[](fg:#3DDC84)[](bg:#3DDC84 fg:black)[](fg:#3DDC84) "
-Arch = "[](fg:#1793D1)[](bg:#1793D1 fg:#FFFFFF)[](fg:#1793D1) "
-CentOS = "[](fg:#932279)[](bg:#932279 fg:#FFFFFF)[](fg:#932279) "
-Debian = "[](fg:#A81D33)[](bg:#A81D33 fg:#FFFFFF)[](fg:#A81D33) "
-Fedora = "[](fg:#51A2DA)[](bg:#51A2DA fg:#FFFFFF)[](fg:#51A2DA) "
-FreeBSD = "[](fg:#AB2B28)[](bg:#AB2B28 fg:#FFFFFF)[](fg:#AB2B28) "
-Gentoo = "[](fg:#54487A)[](bg:#54487A fg:#FFFFFF)[](fg:#54487A) "
-Linux = "[](fg:#FCC624)[](bg:#FCC624 fg:black)[](fg:#FCC624) "
-Macos = "[](fg:#A2AAAD)[](bg:#A2AAAD fg:black)[](fg:#A2AAAD) "
-Manjaro = "[](fg:#35BF5C)[](bg:#35BF5C fg:#FFFFFF)[](fg:#35BF5C) "
-Mint = "[](fg:#87CF3E)[󰣭](bg:#87CF3E fg:black)[](fg:#87CF3E) "
-NixOS = "[](fg:#5277C3)[](bg:#5277C3 fg:#FFFFFF)[](fg:#5277C3) "
-OpenBSD = "[](fg:#F2CA30)[](bg:#F2CA30 fg:black)[](fg:#F2CA30) "
-openSUSE = "[](fg:#73BA25)[](bg:#73BA25 fg:black)[](fg:#73BA25) "
-Raspbian = "[](fg:#C51A4A)[](bg:#C51A4A fg:#FFFFFF)[](fg:#C51A4A) "
-Redhat = "[](fg:#EE0000)[󱄛](bg:#EE0000 fg:#FFFFFF)[](fg:#EE0000) "
-RedHatEnterprise = "[](fg:#EE0000)[](bg:#EE0000 fg:#FFFFFF)[](fg:#EE0000) "
-Ubuntu = "[](fg:#E95420)[](bg:#E95420 fg:#FFFFFF)[](fg:#E95420) "
-Windows = "[](fg:#0078D4)[](bg:#0078D4 fg:#FFFFFF)[](fg:#0078D4) "
+Alpaquita = "[](fg:os_alpaquita)[](bg:os_alpaquita fg:fullwhite)[](fg:os_alpaquita) "
+Alpine = "[](fg:os_alpine)[](bg:os_alpine fg:fullwhite)[](fg:os_alpine) "
+Amazon = "[](fg:os_amazon)[](bg:os_amazon fg:fullblack)[](fg:os_amazon) "
+Android = "[](fg:os_android)[](bg:os_android fg:fullblack)[](fg:os_android) "
+Arch = "[](fg:os_arch)[](bg:os_arch fg:fullwhite)[](fg:os_arch) "
+CentOS = "[](fg:os_centos)[](bg:os_centos fg:fullwhite)[](fg:os_centos) "
+Debian = "[](fg:os_debian)[](bg:os_debian fg:fullwhite)[](fg:os_debian) "
+Fedora = "[](fg:os_fedora)[](bg:os_fedora fg:fullwhite)[](fg:os_fedora) "
+FreeBSD = "[](fg:os_freebsd)[](bg:os_freebsd fg:fullwhite)[](fg:os_freebsd) "
+Gentoo = "[](fg:os_gentoo)[](bg:os_gentoo fg:fullwhite)[](fg:os_gentoo) "
+Linux = "[](fg:os_linux)[](bg:os_linux fg:fullblack)[](fg:os_linux) "
+Macos = "[](fg:os_macos)[](bg:os_macos fg:fullblack)[](fg:os_macos) "
+Manjaro = "[](fg:os_manjaro)[](bg:os_manjaro fg:fullwhite)[](fg:os_manjaro) "
+Mint = "[](fg:os_mint)[󰣭](bg:os_mint fg:fullblack)[](fg:os_mint) "
+NixOS = "[](fg:os_nixos)[](bg:os_nixos fg:fullwhite)[](fg:os_nixos) "
+OpenBSD = "[](fg:os_openbsd)[](bg:os_openbsd fg:fullblack)[](fg:os_openbsd) "
+openSUSE = "[](fg:os_opensuse)[](bg:os_opensuse fg:fullblack)[](fg:os_opensuse) "
+Raspbian = "[](fg:os_raspbian)[](bg:os_raspbian fg:fullwhite)[](fg:os_raspbian) "
+Redhat = "[](fg:os_redhat)[󱄛](bg:os_redhat fg:fullwhite)[](fg:os_redhat) "
+RedHatEnterprise = "[](fg:os_redhat_ent)[](bg:os_redhat_ent fg:fullwhite)[](fg:os_redhat_enterprise) "
+Ubuntu = "[](fg:os_ubuntu)[](bg:os_ubuntu fg:fullwhite)[](fg:os_ubuntu) "
+Windows = "[](fg:os_windows)[](bg:os_windows fg:fullwhite)[](fg:os_windows) "
 
 [localip]
 disabled = false

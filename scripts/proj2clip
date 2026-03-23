@@ -1,0 +1,246 @@
+#!/bin/bash
+
+proj2clip() {
+    # Default values
+    local dir="."
+    local exclude_dirs=".git,node_modules,__pycache__,venv,.venv,dist,build"
+    local max_size="100k"
+    local output_file=""
+    local tree_only=false
+    local line_numbers=false
+    local debug=false
+    local include_paths=()
+    local exclude_paths=()
+    local include_extensions=""
+
+    # Colors for debug output
+    local BOLD='\033[1m'
+    local CYAN='\033[36m'
+    local GREEN='\033[32m'
+    local YELLOW='\033[33m'
+    local RESET='\033[0m'
+
+    show_help() {
+        cat << 'HELPEOF'
+Usage: proj2clip [OPTIONS] [DIRECTORY]
+
+Options:
+    -e, --ext EXT        Include extensions (comma-separated: py,js,ts)
+    -I, --include PATH   Include by path pattern (can be repeated)
+    -x, --exclude PATH   Exclude by path pattern (can be repeated)
+    -s, --max-size SIZE  Max file size (default: 100k)
+    -o, --output FILE    Save to file instead of clipboard
+    -t, --tree           Only show file tree, no content
+    -n, --line-numbers   Add line numbers to code
+    -d, --debug          Print find command and matched files to stderr
+    -h, --help           Show this help
+
+Examples:
+    proj2clip .
+    proj2clip -e py,ts ./src
+    proj2clip -x "test,docs" -e py ./src
+    proj2clip --include "src/" --include "*.config.ts" ./project
+HELPEOF
+    }
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -e|--ext)        include_extensions="$2"; shift 2 ;;
+            -I|--include)    include_paths+=("$2"); shift 2 ;;
+            -x|--exclude)    exclude_paths+=("$2"); shift 2 ;;
+            -s|--max-size)   max_size="$2"; shift 2 ;;
+            -o|--output)     output_file="$2"; shift 2 ;;
+            -t|--tree)       tree_only=true; shift ;;
+            -n|--line-numbers) line_numbers=true; shift ;;
+            -d|--debug)      debug=true; shift ;;
+            -h|--help)       show_help; return 0 ;;
+            *)               dir="$1"; shift ;;
+        esac
+    done
+
+    # Collect all exclude patterns
+    local all_excludes=()
+    IFS=',' read -ra default_excludes <<< "$exclude_dirs"
+    for exc in "${default_excludes[@]}"; do
+        all_excludes+=("$exc")
+    done
+    for pattern in "${exclude_paths[@]}"; do
+        all_excludes+=("$pattern")
+    done
+
+    # Function to build find command with excludes
+    build_find_base() {
+        local cmd="find \"$dir\" -type f -size -${max_size}"
+        for exc in "${all_excludes[@]}"; do
+            cmd+=" -not -path \"*/$exc*\""
+        done
+        echo "$cmd"
+    }
+
+    # Function to find files in order
+    # Returns files in the order of include patterns, preserving first occurrence
+    find_files_ordered() {
+        local -A seen
+        local -a ordered_files=()
+
+        if [[ ${#include_paths[@]} -gt 0 ]]; then
+            for pattern in "${include_paths[@]}"; do
+                local cmd
+                cmd=$(build_find_base)
+                cmd+=" -path \"*/$pattern\""
+                
+                while IFS= read -r file; do
+                    [[ -z "$file" ]] && continue
+                    if [[ -z "${seen[$file]:-}" ]]; then
+                        seen["$file"]=1
+                        ordered_files+=("$file")
+                    fi
+                done < <(eval "$cmd" 2>/dev/null)
+            done
+            
+            # Output in order
+            for f in "${ordered_files[@]}"; do
+                echo "$f"
+            done
+        elif [[ -n "$include_extensions" ]]; then
+            local cmd
+            cmd=$(build_find_base)
+            cmd+=" \("
+            local first=true
+            IFS=',' read -ra ext_list <<< "$include_extensions"
+            for ext in "${ext_list[@]}"; do
+                if $first; then
+                    cmd+=" -name \"*.$ext\""
+                    first=false
+                else
+                    cmd+=" -o -name \"*.$ext\""
+                fi
+            done
+            cmd+=" \)"
+            eval "$cmd" | sort
+        else
+            build_find_base
+        fi
+    }
+
+    # Get ordered files
+    mapfile -t matched_files < <(find_files_ordered)
+
+    # Debug output
+    if $debug; then
+        {
+            echo -e "\n${BOLD}=== DEBUG INFO ===${RESET}"
+            echo -e "${CYAN}Find Command:${RESET}"
+            local base_cmd
+            base_cmd=$(build_find_base)
+            echo -e "${YELLOW}$base_cmd${RESET}"
+            
+            if [[ ${#include_paths[@]} -gt 0 ]]; then
+                echo -e "\n${YELLOW}Include Patterns:${RESET}"
+                for p in "${include_paths[@]}"; do
+                    echo -e "  ${CYAN}-> $p${RESET}"
+                done
+            fi
+            
+            echo -e "\n${CYAN}Matched Files (in order):${RESET}"
+            local idx=0
+            for f in "${matched_files[@]}"; do
+                [[ -z "$f" ]] && continue
+                echo -e "  ${GREEN}✓${RESET} $f"
+            done
+            
+            local count=${#matched_files[@]}
+            echo -e "\n${CYAN}Total Files:${RESET} $count"
+            echo -e "${BOLD}=== END DEBUG ===${RESET}\n" >&2
+        } >&2
+    fi
+
+    generate_output() {
+        echo "# Project: $(basename "$(realpath "$dir")")"
+        echo "# Generated: $(date)"
+        echo ""
+
+        echo "## File Structure"
+        echo "\`\`\`"
+        for f in "${matched_files[@]}"; do
+            [[ -z "$f" ]] && continue
+            echo "$f" | sed "s|^$dir/||"
+        done
+        echo "\`\`\`"
+        echo ""
+
+        if ! $tree_only; then
+            echo "## File Contents"
+            echo ""
+
+            for file in "${matched_files[@]}"; do
+                [[ -z "$file" ]] && continue
+                local rel_path="${file#$dir/}"
+                local lang=""
+                case "${file##*.}" in
+                    py)   lang="python" ;;
+                    js)   lang="javascript" ;;
+                    ts)   lang="typescript" ;;
+                    sh)   lang="bash" ;;
+                    json) lang="json" ;;
+                    yaml|yml) lang="yaml" ;;
+                    md)   lang="markdown" ;;
+                    *)    lang="" ;;
+                esac
+
+                echo "### $rel_path"
+                echo "\`\`\`$lang"
+
+                if $line_numbers; then
+                    cat -n "$file"
+                else
+                    cat "$file"
+                fi
+
+                echo "\`\`\`"
+                echo ""
+            done
+        fi
+
+        local file_count=0
+        local total_lines=0
+        for f in "${matched_files[@]}"; do
+            [[ -z "$f" ]] && continue
+            ((file_count++))
+            if [[ -f "$f" ]]; then
+                local lines
+                lines=$(wc -l < "$f" 2>/dev/null || echo 0)
+                ((total_lines += lines))
+            fi
+        done
+        echo "---"
+        echo "**Stats:** $file_count files, $total_lines total lines"
+    }
+
+    if [[ -n "$output_file" ]]; then
+        generate_output > "$output_file"
+        echo "Saved to $output_file"
+    else
+        if command -v xclip &>/dev/null; then
+            generate_output | xclip -selection clipboard
+        elif command -v pbcopy &>/dev/null; then
+            generate_output | pbcopy
+        elif command -v clip.exe &>/dev/null; then
+            generate_output | clip.exe
+        else
+            echo "No clipboard command found. Use -o to save to file."
+            return 1
+        fi
+
+        local file_count=0
+        for f in "${matched_files[@]}"; do
+            [[ -z "$f" ]] && continue
+            ((file_count++))
+        done
+        echo "✓ Copied $file_count files to clipboard!"
+    fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    proj2clip "$@"
+fi
