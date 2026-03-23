@@ -59,7 +59,7 @@ HELPEOF
     done
 
     # Collect all exclude patterns
-    local all_excludes=()
+    declare -a all_excludes=()
     IFS=',' read -ra default_excludes <<< "$exclude_dirs"
     for exc in "${default_excludes[@]}"; do
         all_excludes+=("$exc")
@@ -68,72 +68,73 @@ HELPEOF
         all_excludes+=("$pattern")
     done
 
-    # Function to build find command with excludes
-    build_find_base() {
-        local cmd="find \"$dir\" -type f -size -${max_size}"
-        for exc in "${all_excludes[@]}"; do
-            cmd+=" -not -path \"*/$exc*\""
-        done
-        echo "$cmd"
-    }
+    # Build find base command as array
+    declare -a find_base_args=()
+    find_base_args+=("find")
+    find_base_args+=("$dir")
+    find_base_args+=("-type")
+    find_base_args+=("f")
+    find_base_args+=("-size")
+    find_base_args+=("-${max_size}")
+    for exc in "${all_excludes[@]}"; do
+        find_base_args+=("-not" "-path" "\"*/$exc*\"")
+    done
 
-    # Function to find files in order
-    # Returns files in the order of include patterns, preserving first occurrence
-    find_files_ordered() {
-        local -A seen
-        local -a ordered_files=()
+    # Find files in order
+    declare -a matched_files=()
+    declare -A seen_files
 
-        if [[ ${#include_paths[@]} -gt 0 ]]; then
-            for pattern in "${include_paths[@]}"; do
-                local cmd
-                cmd=$(build_find_base)
-                cmd+=" -path \"*/$pattern\""
-                
-                while IFS= read -r file; do
-                    [[ -z "$file" ]] && continue
-                    if [[ -z "${seen[$file]:-}" ]]; then
-                        seen["$file"]=1
-                        ordered_files+=("$file")
-                    fi
-                done < <(eval "$cmd" 2>/dev/null)
-            done
+    if [[ ${#include_paths[@]} -gt 0 ]]; then
+        for pattern in "${include_paths[@]}"; do
+            local -a current_find_args=()
+            current_find_args+=("${find_base_args[@]}")
+            current_find_args+=("-path" "\"*/$pattern\"")
             
-            # Output in order
-            for f in "${ordered_files[@]}"; do
-                echo "$f"
-            done
-        elif [[ -n "$include_extensions" ]]; then
-            local cmd
-            cmd=$(build_find_base)
-            cmd+=" \("
-            local first=true
-            IFS=',' read -ra ext_list <<< "$include_extensions"
-            for ext in "${ext_list[@]}"; do
-                if $first; then
-                    cmd+=" -name \"*.$ext\""
-                    first=false
-                else
-                    cmd+=" -o -name \"*.$ext\""
+            while IFS= read -r file; do
+                [[ -z "$file" ]] && continue
+                if [[ -z "${seen_files[$file]:-}" ]]; then
+                    seen_files["$file"]=1
+                    matched_files+=("$file")
                 fi
-            done
-            cmd+=" \)"
-            eval "$cmd" | sort
-        else
-            build_find_base
-        fi
-    }
-
-    # Get ordered files
-    mapfile -t matched_files < <(find_files_ordered)
+            done < <(eval "${current_find_args[@]}" 2>/dev/null)
+        done
+    elif [[ -n "$include_extensions" ]]; then
+        local -a ext_args=()
+        ext_args+=("(")
+        local first=true
+        IFS=',' read -ra ext_list <<< "$include_extensions"
+        for ext in "${ext_list[@]}"; do
+            if $first; then
+                ext_args+=("-name" "\"*.$ext\"")
+                first=false
+            else
+                ext_args+=("-o" "-name" "\"*.$ext\"")
+            fi
+        done
+        ext_args+=(")")
+        
+        local -a full_args=()
+        full_args+=("${find_base_args[@]}")
+        full_args+=("${ext_args[@]}")
+        
+        while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            matched_files+=("$file")
+        done < <(eval "${full_args[@]}" 2>/dev/null | sort)
+    else
+        while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            matched_files+=("$file")
+        done < <(eval "${find_base_args[@]}" 2>/dev/null | sort)
+    fi
 
     # Debug output
     if $debug; then
         {
             echo -e "\n${BOLD}=== DEBUG INFO ===${RESET}"
             echo -e "${CYAN}Find Command:${RESET}"
-            local base_cmd
-            base_cmd=$(build_find_base)
-            echo -e "${YELLOW}$base_cmd${RESET}"
+            local find_cmd="${find_base_args[*]}"
+            echo -e "${YELLOW}$find_cmd${RESET}"
             
             if [[ ${#include_paths[@]} -gt 0 ]]; then
                 echo -e "\n${YELLOW}Include Patterns:${RESET}"
@@ -143,7 +144,6 @@ HELPEOF
             fi
             
             echo -e "\n${CYAN}Matched Files (in order):${RESET}"
-            local idx=0
             for f in "${matched_files[@]}"; do
                 [[ -z "$f" ]] && continue
                 echo -e "  ${GREEN}✓${RESET} $f"
