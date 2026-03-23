@@ -9,7 +9,7 @@ add_newline = true
 palette = "hybrid"
 
 # RIGHT SIDE: Public IP -> Duration -> Status
-right_format = """$cmd_duration$status${custom.publicip}${custom.usage}"""
+right_format = """$cmd_duration$status${custom.publicip_linux}${custom.usage_linux}"""
 
 # LEFT SIDE: OS -> SSH -> Dir -> Git -> Languages -> Line Break -> Info -> Prompt
 format = """
@@ -250,7 +250,40 @@ os_ubuntu       = "202"
 os_windows      = "32"
 
 # ------------------------------------------------------------------------------
-# CORE MODULES
+# CUSTOM MODULES
+# ------------------------------------------------------------------------------
+
+# 1. SSH (LINUX ONLY)
+[custom.ssh]
+os = "linux"
+description = "Show user@host only in SSH and not in TMUX"
+when = '[[ -n "$SSH_CONNECTION" ]] && [[ -z "$TMUX" ]]'
+command = 'echo "$USER@$(hostname)"'
+format = "[](fg:dark_bg)[$output](bold fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:text_light bg:dark_bg)[󰱠](fg:dark_bg bg:text_light)[](fg:text_light) "
+shell = ["bash", "--noprofile", "--norc"]
+
+# 2. CPU/RAM USAGE (LINUX ONLY)
+[custom.usage_linux]
+os = "linux"
+disabled = false
+description = "CPU & Memory Usage with Dynamic Colors"
+command = "~/.local/bin/checkusage"
+format = "[](fg:dark_bg)[$output](bg:dark_bg)[](fg:dark_bg) "
+when = "true"
+shell = ["bash", "--noprofile", "--norc"]
+
+# --- PUBLIC IP (LINUX) ---
+[custom.publicip_linux]
+os = "linux"
+disabled = false
+description = "Public IP Address (Linux)"
+command = "~/.local/bin/checkip"
+format = "([](fg:dark_bg)[$output](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:bg_ip_pub bg:dark_bg)[](fg:dark_bg bg:bg_ip_pub)[](fg:bg_ip_pub) )"
+when = "true"
+shell = ["bash", "--noprofile", "--norc", "-c"]
+
+# ------------------------------------------------------------------------------
+# CORE MODULES (Work exactly the same on Linux & Windows)
 # ------------------------------------------------------------------------------
 
 [character]
@@ -310,26 +343,6 @@ style = "bold bat_ok"
 threshold = 100
 style = "bold bat_full"
 
-# Toggle command: starship toggle custom.usage
-[custom.usage]
-disabled = false
-description = "CPU & Memory Usage with Dynamic Colors"
-command = "~/.local/bin/checkusage"
-format = "[](fg:dark_bg)[$output](bg:dark_bg)[](fg:dark_bg) "
-when = "true"
-shell = ["bash", "--noprofile", "--norc"]
-
-# ------------------------------------------------------------------------------
-# CONTEXT
-# ------------------------------------------------------------------------------
-
-[custom.ssh]
-description = "Show user@host only in SSH and not in TMUX"
-when = '[[ -n "$SSH_CONNECTION" ]] && [[ -z "$TMUX" ]]'
-command = 'echo "$USER@$(hostname)"'
-format = "[](fg:dark_bg)[$output](bold fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:text_light bg:dark_bg)[󰱠](fg:dark_bg bg:text_light)[](fg:text_light) "
-shell = ["bash", "--noprofile", "--norc"]
-
 [os]
 disabled = false
 format = "$symbol"
@@ -362,21 +375,6 @@ Windows = "[](fg:os_windows)[](bg:os_windows fg:fullwhite)[](fg:os_wind
 disabled = false
 ssh_only = false
 format = "[](fg:dark_bg)[$localipv4](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:bg_ip_priv bg:dark_bg)[󰩠](fg:dark_bg bg:bg_ip_priv)[](fg:bg_ip_priv) "
-
-[custom.localip]
-disabled = true
-description = "Local IP Address (Hides on Disconnect)"
-command = "hostname -i | cut -d' ' -f1"
-when = "hostname -i | grep -q ."
-format = "[](fg:dark_bg)[$output](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:bg_ip_priv bg:dark_bg)[󰩠](fg:dark_bg bg:bg_ip_priv)[](fg:bg_ip_priv) "
-shell = ["sh"]
-
-[custom.publicip]
-disabled = true
-description = "Public IP Address"
-command = "~/.local/bin/checkip"
-format = "([](fg:dark_bg)[$output](fg:text_light bg:dark_bg)[](fg:dark_bg bg:dark_bg)[](fg:bg_ip_pub bg:dark_bg)[](fg:dark_bg bg:bg_ip_pub)[](fg:bg_ip_pub) )"
-when = "true"
 
 # ------------------------------------------------------------------------------
 # DIRECTORY & GIT
