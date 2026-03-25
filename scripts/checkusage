@@ -14,7 +14,7 @@ if [ -f "$TMP_FILE" ]; then
     read prev_total prev_idle < "$TMP_FILE"
     diff_total=$((total-prev_total))
     diff_idle=$((idle_sum-prev_idle))
-    
+
     # Avoid division by zero
     if [ "$diff_total" -gt 0 ]; then
         cpu=$((100*(diff_total-diff_idle)/diff_total))
@@ -43,4 +43,8 @@ if [ "$cpu" -ge 80 ]; then c_color=$red; elif [ "$cpu" -ge 50 ]; then c_color=$o
 if [ "$mem" -ge 80 ]; then m_color=$red; elif [ "$mem" -ge 50 ]; then m_color=$orange; else m_color=$green; fi
 
 # --- Output ---
-echo -e "${c_color} ${norm}${cpu}%  ${m_color} ${norm}${mem}%"
+if [ "$1" = "-nocolor" ]; then
+    echo -e " ${cpu}%   ${mem}%"
+else
+    echo -e "${c_color} ${norm}${cpu}%  ${m_color} ${norm}${mem}%"
+fi

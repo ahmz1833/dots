@@ -1,0 +1,43 @@
+#!/bin/zsh
+
+IFACE=$(ip route | awk '/default/ {print $5; exit}')
+[ -z "$IFACE" ] && echo "N/A" && exit 0
+
+RX_FILE="/tmp/tmux_rx_$IFACE"
+TX_FILE="/tmp/tmux_tx_$IFACE"
+TIME_FILE="/tmp/tmux_time_$IFACE"
+
+RX=$(cat /sys/class/net/$IFACE/statistics/rx_bytes 2>/dev/null || echo 0)
+TX=$(cat /sys/class/net/$IFACE/statistics/tx_bytes 2>/dev/null || echo 0)
+NOW=$(date +%s)
+
+if [ -f "$RX_FILE" ] && [ -f "$TX_FILE" ] && [ -f "$TIME_FILE" ]; then
+    PREV_RX=$(cat "$RX_FILE")
+    PREV_TX=$(cat "$TX_FILE")
+    PREV_TIME=$(cat "$TIME_FILE")
+    
+    ELAPSED=$((NOW - PREV_TIME))
+    [ $ELAPSED -eq 0 ] && ELAPSED=1
+    
+    RX_BYTES=$((RX - PREV_RX))
+    TX_BYTES=$((TX - PREV_TX))
+    
+    RX_RATE=$(( RX_BYTES / ELAPSED / 1024 ))
+    TX_RATE=$(( TX_BYTES / ELAPSED / 1024 ))
+    
+    format() {
+        if [ $1 -gt 1024 ]; then
+            printf "%.1fM" $(echo "scale=1; $1/1024" | bc)
+        else
+            echo "${1}K"
+        fi
+    }
+    
+    echo "↓$(format $RX_RATE) ↑$(format $TX_RATE)"
+else
+    echo "..."
+fi
+
+echo $RX > "$RX_FILE"
+echo $TX > "$TX_FILE"
+echo $NOW > "$TIME_FILE"

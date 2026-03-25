@@ -17,7 +17,7 @@
 "   <Leader>l  : List all open buffers
 "   <Leader>b  : Toggle file explorer (Netrw)
 "   <Leader>h  : Clear search highlighting
-"   <Leader>r  : Toggle relative line numbers
+"   <Leader>r  : Toggle line numbers (3-state: Off, Absolute, Relative)
 "   <Leader>m  : Toggle mouse mode
 "   <Leader>c  : Copy visual selection to local clipboard (OSC52 over SSH)
 "   <Leader>y  : Copy to system clipboard (if supported)
@@ -140,8 +140,21 @@ let mapleader = " "
 " Toggle mouse mode
 nnoremap <leader>m :let &mouse = &mouse ==# 'a' ? '' : 'a'<CR>:echo "Mouse: " . (&mouse ==# 'a' ? "ON" : "OFF")<CR>
 
-" Toggle relative numbers
-nnoremap <leader>r :set relativenumber!<CR>
+" Toggle line numbers (3-state)
+function! ToggleLineNumbers()
+    if &relativenumber
+        set nonumber
+        set norelativenumber
+        echo "Line numbers: OFF"
+    elseif &number
+        set relativenumber
+        echo "Line numbers: RELATIVE"
+    else
+        set number
+        echo "Line numbers: ABSOLUTE"
+    endif
+endfunction
+nnoremap <leader>r :call ToggleLineNumbers()<CR>
 
 " Explicit system clipboard mappings
 vnoremap <leader>y "+y

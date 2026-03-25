@@ -190,6 +190,13 @@ else
     show_message "Shell install script not found. Skipping."
 fi
 
+show_progress "Executing Tmux install script..."
+if [ -f "${DOTS_DIR}/tmux/install.sh" ]; then
+    run_subscript bash "${DOTS_DIR}/tmux/install.sh"
+else
+    show_message "Tmux install script not found. Skipping."
+fi
+
 setup_scripts
 
 if [ "$HAS_CHANGED" -eq 1 ]; then
