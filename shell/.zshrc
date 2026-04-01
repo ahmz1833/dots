@@ -287,6 +287,65 @@ whop() {
     sudo lsof -i :"$1" -P -n
 }
 
+proxy() {
+    local proxy_url="${1:-socks5h://127.0.0.1:1080}"
+    local no_proxy_value="${2:-localhost,127.0.0.1,::1}"
+
+    export http_proxy="$proxy_url"
+    export https_proxy="$proxy_url"
+    export ftp_proxy="$proxy_url"
+    export all_proxy="$proxy_url"
+    export HTTP_PROXY="$proxy_url"
+    export HTTPS_PROXY="$proxy_url"
+    export FTP_PROXY="$proxy_url"
+    export ALL_PROXY="$proxy_url"
+    export no_proxy="$no_proxy_value"
+    export NO_PROXY="$no_proxy_value"
+
+    export npm_config_proxy="$proxy_url"
+    export npm_config_https_proxy="$proxy_url"
+
+    if command -v git >/dev/null 2>&1; then
+        git config --global http.proxy "$proxy_url"
+        git config --global https.proxy "$proxy_url"
+    fi
+
+    unset GIT_SSH_COMMAND
+    if [[ "$proxy_url" == socks5://* || "$proxy_url" == socks5h://* ]]; then
+        local proxy_addr="${proxy_url#*://}"
+        local proxy_host="${proxy_addr%:*}"
+        local proxy_port="${proxy_addr##*:}"
+        local proxy_cmd=""
+
+        if command -v nc >/dev/null 2>&1 && nc -h 2>&1 | grep -q '\-X'; then
+            proxy_cmd="nc -X 5 -x ${proxy_host}:${proxy_port} %h %p"
+        elif command -v ncat >/dev/null 2>&1; then
+            proxy_cmd="ncat --proxy-type socks5 --proxy ${proxy_host}:${proxy_port} %h %p"
+        elif command -v connect >/dev/null 2>&1; then
+            proxy_cmd="connect -S ${proxy_host}:${proxy_port} %h %p"
+        fi
+
+        if [[ -n "$proxy_cmd" ]]; then
+            export GIT_SSH_COMMAND="ssh -o ProxyCommand='$proxy_cmd'"
+        fi
+    fi
+
+    echo "Proxy enabled for this shell: $proxy_url"
+    echo "Git HTTP(S) proxy is set via git config --global; SSH proxy is set in this shell when supported."
+    echo "Use sudo -E if you need sudo to keep these proxy variables."
+}
+
+unproxy() {
+    unset http_proxy https_proxy ftp_proxy all_proxy
+    unset HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY
+    unset no_proxy NO_PROXY
+    unset npm_config_proxy npm_config_https_proxy
+    unset GIT_SSH_COMMAND
+    git config --global --unset-all http.proxy 2>/dev/null
+    git config --global --unset-all https.proxy 2>/dev/null
+    echo "Proxy disabled for this shell."
+}
+
 ##############################################
 
 pssh() {
