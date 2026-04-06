@@ -19,8 +19,8 @@
 "   <Leader>h  : Clear search highlighting
 "   <Leader>r  : Toggle line numbers (3-state: Off, Absolute, Relative)
 "   <Leader>m  : Toggle mouse mode
-"   <Leader>c  : Copy visual selection to local clipboard (OSC52 over SSH)
-"   <Leader>y  : Copy to system clipboard (if supported)
+"   <Leader>c  : Copy visual selection to local clipboard (OSC52 over SSH/TMUX)
+"   <Leader>y  : (like leader+c)
 "   <Leader>p/P: Paste from system clipboard
 "   <Leader>s  : Replace word under cursor (Normal) / Replace selection (Visual)
 "   <Tab>      : Next buffer
@@ -65,11 +65,8 @@ set hlsearch
 set ignorecase
 set smartcase
 
-" Clipboard and Mouse
+" Mouse
 set mouse=a
-if has('clipboard')
-    set clipboard=unnamedplus
-endif
 
 " Default Indentation
 set tabstop=4
@@ -156,26 +153,33 @@ function! ToggleLineNumbers()
 endfunction
 nnoremap <leader>r :call ToggleLineNumbers()<CR>
 
-" Explicit system clipboard mappings
-vnoremap <leader>y "+y
-nnoremap <leader>p "+p
-nnoremap <leader>P "+P
-
-" Copy directly to local clipboard over SSH (OSC52)
-vnoremap <leader>c :<C-u>call CopyOSC52()<CR>
-function! CopyOSC52()
-    let l:temp = @"
-    normal! gv""y
-    let l:text = @"
-    let @" = l:temp
-    let l:b64 = system('base64 | tr -d "\n"', l:text)
+" Core OSC52 Copy Function (Sends text over SSH to Local OS)
+function! SendOSC52(text)
+    let l:b64 = system('base64 | tr -d "\n"', a:text)
     let l:osc = "\x1b]52;c;" . l:b64 . "\x07"
-    if filewritable('/dev/tty')
+    if !empty($TMUX)
+        let l:osc = "\x1bPtmux;\x1b" . substitute(l:osc, "\x1b", "\x1b\x1b", 'g') . "\x1b\\"
+    endif
+    if exists('*echoraw')
+        call echoraw(l:osc)
+    elseif filewritable('/dev/tty')
         call writefile([l:osc], '/dev/tty', 'b')
     else
-        echo "Failed to write OSC52 to /dev/tty"
+        call system("printf '%s' " . shellescape(l:osc) . " > /dev/tty")
     endif
 endfunction
+
+" CLIPBOARD A: INTERNAL (Remote Vim Only)
+" Standard 'y', 'd', 'p', 'P' work normally.
+" They stay inside Vim on the server. No network traffic.
+
+" CLIPBOARD B: EXTERNAL (Local Physical Machine)
+" Use <leader>y (or standard "+y) to copy explicitly to your physical computer
+vnoremap <silent> <leader>y y:call SendOSC52(@")<CR>
+nnoremap <silent> <leader>y yy:call SendOSC52(@")<CR>
+vnoremap <silent> <leader>c y:call SendOSC52(@")<CR>
+vnoremap <silent> "+y y:call SendOSC52(@")<CR>
+nnoremap <silent> "+y yy:call SendOSC52(@")<CR>
 
 " Basic file ops
 nnoremap <leader>w :w<CR>
