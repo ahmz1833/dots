@@ -18,6 +18,56 @@ show_success()  { echo -e "\033[1;32m[OK]\033[0m $1"; }
 show_warning()  { echo -e "\033[1;33m[!!]\033[0m $1"; }
 show_error()    { echo -e "\033[1;31m[XX]\033[0m $1"; }
 
+INSTALL_REGION="${INSTALL_REGION:-global}"
+S3_ASSETS_BASE="https://s3.ahmz.ir/server_setup/assets/github.com"
+S3_DOTS_BASE="https://s3.ahmz.ir/dots"
+
+is_iran_install() {
+    [ "$INSTALL_REGION" = "iran" ]
+}
+
+ensure_local_bin() {
+    mkdir -p "${HOME_DIR}/.local/bin"
+}
+
+install_binary_from_tarball() {
+    local url="$1"
+    local binary_name="$2"
+    local target_name="${3:-$2}"
+    local temp_dir extracted_path
+
+    temp_dir=$(mktemp -d)
+    curl -fsSL "$url" | tar -xz -C "$temp_dir"
+    extracted_path=$(find "$temp_dir" -type f -name "$binary_name" | head -n 1)
+
+    if [ -z "$extracted_path" ]; then
+        rm -rf "$temp_dir"
+        show_error "Failed to locate $binary_name in downloaded archive."
+        return 1
+    fi
+
+    ensure_local_bin
+    chmod +x "$extracted_path"
+    mv "$extracted_path" "${HOME_DIR}/.local/bin/${target_name}"
+    rm -rf "$temp_dir"
+}
+
+install_oh_my_zsh_from_tarball() {
+    local temp_dir
+
+    temp_dir=$(mktemp -d)
+    curl -fsSL "${S3_DOTS_BASE}/oh-my-zsh.tar.gz" | tar -xz -C "$temp_dir"
+
+    if [ ! -d "${temp_dir}/.oh-my-zsh" ]; then
+        rm -rf "$temp_dir"
+        show_error "oh-my-zsh archive did not contain the expected .oh-my-zsh directory."
+        return 1
+    fi
+
+    cp -a "${temp_dir}/.oh-my-zsh" "${HOME_DIR}/"
+    rm -rf "$temp_dir"
+}
+
 install_base_packages() {
     local -a pkgs=(zsh curl git ripgrep)
     local needs_install=0
@@ -62,51 +112,96 @@ check_fzf_version() {
 
 install_fzf() {
     show_progress "Installing fzf..."
-    if [ ! -d "${HOME_DIR}/.fzf" ]; then
-        git clone --depth 1 https://github.com/junegunn/fzf.git "${HOME_DIR}/.fzf"
+    if is_iran_install && [ "$(uname -m)" = "x86_64" ]; then
+        install_binary_from_tarball \
+            "${S3_ASSETS_BASE}/junegunn/fzf/releases/download/v0.70.0/fzf-0.70.0-linux_amd64.tar.gz" \
+            "fzf"
         HAS_CHANGED=1
     else
-        local pull_output
-        pull_output=$(git -C "${HOME_DIR}/.fzf" pull 2>&1)
-        if [[ "$pull_output" != *"Already up to date."* ]]; then
+        if [ ! -d "${HOME_DIR}/.fzf" ]; then
+            git clone --depth 1 https://github.com/junegunn/fzf.git "${HOME_DIR}/.fzf"
             HAS_CHANGED=1
+        else
+            local pull_output
+            pull_output=$(git -C "${HOME_DIR}/.fzf" pull 2>&1)
+            if [[ "$pull_output" != *"Already up to date."* ]]; then
+                HAS_CHANGED=1
+            fi
         fi
+        "${HOME_DIR}/.fzf/install" --bin --no-update-rc --no-bash --no-zsh --no-fish
+
+        ensure_local_bin
+        ln -sf "${HOME_DIR}/.fzf/bin/fzf" "${HOME_DIR}/.local/bin/fzf"
     fi
-    "${HOME_DIR}/.fzf/install" --bin --no-update-rc --no-bash --no-zsh --no-fish
-    
-    mkdir -p "${HOME_DIR}/.local/bin"
-    ln -sf "${HOME_DIR}/.fzf/bin/fzf" "${HOME_DIR}/.local/bin/fzf"
     show_success "fzf installed."
 }
 
 install_zoxide() {
     show_progress "Installing zoxide..."
-    curl -sS https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh
+    if is_iran_install && [ "$(uname -m)" = "x86_64" ]; then
+        install_binary_from_tarball \
+            "${S3_ASSETS_BASE}/ajeetdsouza/zoxide/releases/download/v0.9.9/zoxide-0.9.9-x86_64-unknown-linux-musl.tar.gz" \
+            "zoxide"
+    else
+        curl -sS https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh
+    fi
     HAS_CHANGED=1
     show_success "zoxide installed."
 }
 
 install_eza() {
     show_progress "Installing eza..."
-    local temp_dir arch eza_url
-    temp_dir=$(mktemp -d)
+    local arch eza_url
     arch=$(uname -m)
-    
-    if [ "$arch" = "x86_64" ]; then
+
+    if is_iran_install && [ "$arch" = "x86_64" ]; then
+        eza_url="${S3_ASSETS_BASE}/eza-community/eza/releases/download/v0.23.4/eza_x86_64-unknown-linux-musl.tar.gz"
+        install_binary_from_tarball "$eza_url" "eza"
+    elif [ "$arch" = "x86_64" ]; then
         eza_url="https://github.com/eza-community/eza/releases/latest/download/eza_x86_64-unknown-linux-gnu.tar.gz"
+        install_binary_from_tarball "$eza_url" "eza"
     elif [ "$arch" = "aarch64" ]; then
         eza_url="https://github.com/eza-community/eza/releases/latest/download/eza_aarch64-unknown-linux-gnu.tar.gz"
+        install_binary_from_tarball "$eza_url" "eza"
     else
         show_error "Unsupported architecture."
         return 1
     fi
-    
-    curl -fsSL "$eza_url" | tar -xz -C "$temp_dir"
-    mkdir -p "${HOME_DIR}/.local/bin"
-    mv "${temp_dir}/eza" "${HOME_DIR}/.local/bin/eza"
-    rm -rf "$temp_dir"
     HAS_CHANGED=1
     show_success "eza installed."
+}
+
+install_starship() {
+    show_progress "Installing starship..."
+    if is_iran_install && [ "$(uname -m)" = "x86_64" ]; then
+        install_binary_from_tarball \
+            "${S3_ASSETS_BASE}/starship/starship/releases/download/v1.24.2/starship-x86_64-unknown-linux-musl.tar.gz" \
+            "starship"
+    else
+        if [ "$SKIP_SUDO" -eq 1 ]; then
+            ensure_local_bin
+            curl -sS https://starship.rs/install.sh | sh -s -- -y -b "${HOME_DIR}/.local/bin"
+        else
+            curl -sS https://starship.rs/install.sh | sh -s -- -y
+        fi
+    fi
+    HAS_CHANGED=1
+    show_success "starship installed."
+}
+
+install_oh_my_zsh() {
+    if [ ! -d "${HOME_DIR}/.oh-my-zsh" ]; then
+        show_progress "Installing oh-my-zsh..."
+        if is_iran_install; then
+            install_oh_my_zsh_from_tarball
+        else
+            RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+        fi
+        HAS_CHANGED=1
+        show_success "oh-my-zsh installed."
+    else
+        show_success "oh-my-zsh already installed."
+    fi
 }
 
 link_file() {
@@ -157,25 +252,10 @@ else
     show_success "eza already installed."
 fi
 
-if [ ! -d "${HOME_DIR}/.oh-my-zsh" ]; then
-    show_progress "Installing oh-my-zsh..."
-    RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-    HAS_CHANGED=1
-    show_success "oh-my-zsh installed."
-else
-    show_success "oh-my-zsh already installed."
-fi
+install_oh_my_zsh
 
 if ! command -v starship >/dev/null 2>&1; then
-    show_progress "Installing starship..."
-    if [ "$SKIP_SUDO" -eq 1 ]; then
-        mkdir -p "${HOME_DIR}/.local/bin"
-        curl -sS https://starship.rs/install.sh | sh -s -- -y -b "${HOME_DIR}/.local/bin"
-    else
-        curl -sS https://starship.rs/install.sh | sh -s -- -y
-    fi
-    HAS_CHANGED=1
-    show_success "starship installed."
+    install_starship
 else
     show_success "starship already installed."
 fi

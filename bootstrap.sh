@@ -9,12 +9,29 @@ GITHUB_REPO="dots"
 FETCH_MODE="interactive"
 S3_BUCKET_URL="https://s3.ahmz.ir/dots"
 SKIP_SUDO=0
+INSTALL_REGION=""
 HAS_CHANGED=0
 
-for arg in "$@"; do
-    if [ "$arg" = "--no-sudo" ]; then
-        SKIP_SUDO=1
-    fi
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --no-sudo)
+            SKIP_SUDO=1
+            ;;
+        --iran)
+            INSTALL_REGION="iran"
+            ;;
+        --global)
+            INSTALL_REGION="global"
+            ;;
+        --install-region)
+            shift
+            INSTALL_REGION="${1:-}"
+            ;;
+        --install-region=*)
+            INSTALL_REGION="${1#*=}"
+            ;;
+    esac
+    shift
 done
 
 show_progress() { echo -e "\033[1;34m[..]\033[0m $1"; }
@@ -171,9 +188,27 @@ else
     fetch_dots "$FETCH_MODE"
 fi
 
-INSTALL_ARGS=""
+if [ -z "$INSTALL_REGION" ]; then
+    if [ -t 0 ]; then
+        echo "Select install source:"
+        echo "1) Global (GitHub/default)"
+        echo "2) Iran mirror (S3 assets)"
+        read -rp "Enter choice [1-2] (default 1): " install_choice
+
+        case "$install_choice" in
+            2) INSTALL_REGION="iran" ;;
+            *) INSTALL_REGION="global" ;;
+        esac
+    else
+        INSTALL_REGION="global"
+    fi
+fi
+
+export INSTALL_REGION
+
+INSTALL_ARGS=()
 if [ "$SKIP_SUDO" -eq 1 ]; then
-    INSTALL_ARGS="--no-sudo"
+    INSTALL_ARGS+=("--no-sudo")
 fi
 
 show_progress "Executing Vim install script..."
@@ -185,7 +220,7 @@ fi
 
 show_progress "Executing Shell install script..."
 if [ -f "${DOTS_DIR}/shell/install.sh" ]; then
-    run_subscript zsh "${DOTS_DIR}/shell/install.sh" $INSTALL_ARGS
+    run_subscript zsh "${DOTS_DIR}/shell/install.sh" "${INSTALL_ARGS[@]}"
 else
     show_message "Shell install script not found. Skipping."
 fi
