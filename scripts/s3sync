@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage:
+  s3sync [--delete] [-P] <local_dir> <s3_bucket_or_uri> [prefix]
+
+Examples:
+  s3sync /tmp/site my-bucket
+  s3sync --delete /tmp/site my-bucket
+  s3sync -P ./dist my-bucket
+  s3sync ./dist my-bucket releases/v1
+  s3sync ./dist s3://my-bucket/releases/v1
+
+Env (optional):
+  AWS_REGION=iran
+  S3_ENDPOINT_URL=https://s3.ir-thr-at1.arvanstorage.ir
+EOF
+}
+
+S3_ENDPOINT_URL="${S3_ENDPOINT_URL:-https://s3.ir-thr-at1.arvanstorage.ir}"
+
+get_aws_config_value() {
+    local key="$1"
+    local profile="${AWS_PROFILE:-default}"
+
+    if [[ "$profile" == "default" ]]; then
+        aws configure get "$key" 2>/dev/null || true
+    else
+        aws configure get "$key" --profile "$profile" 2>/dev/null || true
+    fi
+}
+
+set_aws_config_value() {
+    local key="$1"
+    local value="$2"
+    local profile="${AWS_PROFILE:-default}"
+
+    if [[ "$profile" == "default" ]]; then
+        aws configure set "$key" "$value"
+    else
+        aws configure set "$key" "$value" --profile "$profile"
+    fi
+}
+
+ensure_aws_credentials() {
+    local access_key secret_key profile
+    profile="${AWS_PROFILE:-default}"
+
+    access_key="${AWS_ACCESS_KEY_ID:-$(get_aws_config_value aws_access_key_id)}"
+    secret_key="${AWS_SECRET_ACCESS_KEY:-$(get_aws_config_value aws_secret_access_key)}"
+
+    if [[ -n "$access_key" && -n "$secret_key" ]]; then
+        return 0
+    fi
+
+    echo "AWS credentials not found for profile '$profile'."
+    read -r -p "Enter AWS Access Key ID: " access_key
+    read -r -s -p "Enter AWS Secret Access Key: " secret_key
+    echo
+
+    if [[ -z "$access_key" || -z "$secret_key" ]]; then
+        echo "Error: both access key and secret key are required." >&2
+        exit 1
+    fi
+
+    set_aws_config_value aws_access_key_id "$access_key"
+    set_aws_config_value aws_secret_access_key "$secret_key"
+
+    if [[ -n "${AWS_REGION:-}" ]]; then
+        set_aws_config_value region "$AWS_REGION"
+    fi
+
+    export AWS_ACCESS_KEY_ID="$access_key"
+    export AWS_SECRET_ACCESS_KEY="$secret_key"
+    echo "Credentials saved for profile '$profile'."
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+DELETE_MODE=0
+PUBLIC_MODE=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --delete)
+            DELETE_MODE=1
+            shift
+            ;;
+        -P)
+            PUBLIC_MODE=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            echo "Error: unknown option: $1" >&2
+            usage
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+    usage
+    exit 1
+fi
+
+LOCAL_DIR="$1"
+BUCKET_OR_URI="$2"
+PREFIX="${3:-}"
+
+if ! command -v aws >/dev/null 2>&1; then
+    echo "Error: aws CLI is not installed or not in PATH." >&2
+    exit 1
+fi
+
+ensure_aws_credentials
+
+if [[ ! -d "$LOCAL_DIR" ]]; then
+    echo "Error: local directory not found: $LOCAL_DIR" >&2
+    exit 1
+fi
+
+if [[ "$BUCKET_OR_URI" == s3://* ]]; then
+    DEST="$BUCKET_OR_URI"
+else
+    DEST="s3://$BUCKET_OR_URI"
+    if [[ -n "$PREFIX" ]]; then
+        DEST="$DEST/$PREFIX"
+    fi
+fi
+
+# Remove trailing slash to avoid accidental double-slash in target path.
+DEST="${DEST%/}"
+
+AWS_ARGS=()
+if [[ -n "${AWS_REGION:-}" ]]; then
+    AWS_ARGS+=(--region "$AWS_REGION")
+fi
+if [[ -n "${S3_ENDPOINT_URL:-}" ]]; then
+    AWS_ARGS+=(--endpoint-url "$S3_ENDPOINT_URL")
+fi
+
+echo "Syncing '$LOCAL_DIR' -> '$DEST' ..."
+SYNC_ARGS=()
+if [[ "$DELETE_MODE" -eq 1 ]]; then
+    SYNC_ARGS+=(--delete)
+fi
+if [[ "$PUBLIC_MODE" -eq 1 ]]; then
+    SYNC_ARGS+=(--acl public-read)
+fi
+
+aws s3 sync "$LOCAL_DIR" "$DEST" "${AWS_ARGS[@]}" "${SYNC_ARGS[@]}"
+
+echo "Done."
