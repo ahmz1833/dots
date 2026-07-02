@@ -166,6 +166,8 @@ source $ZSH/oh-my-zsh.sh
 alias cl='clear'
 
 alias py='python3'
+alias pyvenv='python3 -m venv .venv'
+alias pactive='source .venv/bin/activate'
 
 alias k='kubectl'
 alias kctx='k config use-context'
@@ -183,7 +185,8 @@ alias kdel='k delete'
 alias g='git'
 alias glog='git log --graph --color --decorate --oneline'
 alias gitlog='git log --all --color --decorate --graph'
-
+alias gpsh='git push origin `git branch --show-current`'
+alias gpll='git stash && git pull origin `git branch --show-current` --rebase && git stash pop'
 alias grep='grep --color=auto'
 
 alias svim='EDITOR=vim sudoedit'

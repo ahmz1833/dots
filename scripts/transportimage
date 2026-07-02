@@ -1,0 +1,22 @@
+transportimage() {
+    [[ -z "$2" ]] && { echo "Usage: transport_image <image[:tag]> <host>"; return 1; }
+    local img="$1" host="$2"
+    [[ "$img" != *:* ]] && img="${img}:latest"
+    local tmp="/tmp/${img//[\/:]/_}_$(date +%s).tar.gz"
+    echo "Pulling $img..."
+    docker pull "$img" || return 1
+    local raw
+    raw=$(docker image inspect "$img" --format='{{.Size}}' | awk '{printf "%.2f MB", $1/1048576}')
+    echo "Compressing ($raw uncompressed)..."
+    docker save "$img" | gzip > "$tmp" || { rm -f "$tmp"; return 1; }
+    local comp
+    comp=$(du -h "$tmp" | cut -f1)
+    echo "Transferring ($comp compressed)..."
+    rsync -aP "$tmp" "$host:$tmp" || { rm -f "$tmp"; return 1; }
+    echo "Loading on remote..."
+    ssh "$host" "docker load -i $tmp && rm -f $tmp"
+    rm -f "$tmp"
+    echo "Done."
+}
+
+transportimage "$@"
