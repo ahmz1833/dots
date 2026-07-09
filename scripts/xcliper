@@ -3,6 +3,15 @@
 # Read stdin into a variable
 TEXT=$(cat)
 
+# Find the correct TTY to write to (Tmux server daemon has no /dev/tty)
+OUT_TTY="/dev/tty"
+if [ -n "$TMUX" ]; then
+    CURRENT_TTY=$(tmux display-message -p '#{pane_tty}' 2>/dev/null)
+    if [ -n "$CURRENT_TTY" ] && [ -w "$CURRENT_TTY" ]; then
+        OUT_TTY="$CURRENT_TTY"
+    fi
+fi
+
 # 1. Attempt local clipboard tools
 if command -v pbcopy >/dev/null 2>&1; then
     printf "%s" "$TEXT" | pbcopy "$@"
@@ -18,14 +27,14 @@ elif command -v termux-clipboard-set >/dev/null 2>&1; then
     printf "%s" "$TEXT" | termux-clipboard-set "$@"
 fi
 
-# 2. Always send OSC52 to /dev/tty (handles SSH and fallback cases)
+# 2. Always send OSC52 to the terminal (handles SSH and fallback cases)
 b64=$(printf "%s" "$TEXT" | base64 | tr -d '\n' | tr -d '\r')
 
 if [ -n "$TMUX" ] || [[ "$TERM" == screen* ]] || [[ "$TERM" == tmux* ]]; then
     # Single passthrough (for 1 layer of tmux)
-    printf "\033Ptmux;\033\033\033]52;c;%s\007\033\\" "$b64" > /dev/tty
+    printf "\033Ptmux;\033\033\033]52;c;%s\007\033\\" "$b64" > "$OUT_TTY"
     # Double passthrough (for 2 layers of tmux, e.g. remote-tmux inside local-tmux)
-    printf "\033Ptmux;\033\033\033Ptmux;\033\033\033\033\033\033]52;c;%s\007\033\033\\\033\\" "$b64" > /dev/tty
+    printf "\033Ptmux;\033\033\033Ptmux;\033\033\033\033\033\033]52;c;%s\007\033\033\\\033\\" "$b64" > "$OUT_TTY"
 else
-    printf "\033]52;c;%s\007" "$b64" > /dev/tty
+    printf "\033]52;c;%s\007" "$b64" > "$OUT_TTY"
 fi
