@@ -159,8 +159,11 @@ function! SendOSC52(text)
     let l:osc = "\x1b]52;c;" . l:b64 . "\x07"
     if !empty($TMUX) || $TERM =~# '^screen' || $TERM =~# '^tmux'
         let l:pt1 = "\x1bPtmux;\x1b" . substitute(l:osc, "\x1b", "\x1b\x1b", 'g') . "\x1b\\"
-        let l:pt2 = "\x1bPtmux;\x1b" . substitute(l:pt1, "\x1b", "\x1b\x1b", 'g') . "\x1b\\"
-        let l:osc = l:pt1 . l:pt2
+        let l:osc = l:pt1
+        if !empty($SSH_CLIENT) || !empty($SSH_TTY)
+            let l:pt2 = "\x1bPtmux;\x1b" . substitute(l:pt1, "\x1b", "\x1b\x1b", 'g') . "\x1b\\"
+            let l:osc = l:pt1 . l:pt2
+        endif
     endif
     if exists('*echoraw')
         call echoraw(l:osc)

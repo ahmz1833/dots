@@ -35,10 +35,16 @@ fi
 b64=$(printf "%s" "$TEXT" | base64 | tr -d '\n' | tr -d '\r')
 
 if [ -n "$TMUX" ] || [[ "$TERM" == screen* ]] || [[ "$TERM" == tmux* ]]; then
+    ESC=$'\e'
+    BEL=$'\a'
     # Single passthrough (for 1 layer of tmux)
-    printf "\033Ptmux;\033\033\033]52;c;%s\007\033\\" "$b64" > "$OUT_TTY"
-    # Double passthrough (for 2 layers of tmux, e.g. remote-tmux inside local-tmux)
-    printf "\033Ptmux;\033\033\033Ptmux;\033\033\033\033\033\033]52;c;%s\007\033\033\\\033\\" "$b64" > "$OUT_TTY"
+    printf "%s" "${ESC}Ptmux;${ESC}${ESC}${ESC}]52;c;${b64}${BEL}${ESC}\\" > "$OUT_TTY"
+    # Double passthrough (for 2 layers of tmux), ONLY needed if over SSH
+    if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
+        printf "%s" "${ESC}Ptmux;${ESC}${ESC}${ESC}Ptmux;${ESC}${ESC}${ESC}${ESC}${ESC}${ESC}]52;c;${b64}${BEL}${ESC}${ESC}\\${ESC}\\" > "$OUT_TTY"
+    fi
 else
-    printf "\033]52;c;%s\007" "$b64" > "$OUT_TTY"
+    ESC=$'\e'
+    BEL=$'\a'
+    printf "%s" "${ESC}]52;c;${b64}${BEL}" > "$OUT_TTY"
 fi
