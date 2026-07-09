@@ -22,8 +22,10 @@ fi
 b64=$(printf "%s" "$TEXT" | base64 | tr -d '\n' | tr -d '\r')
 
 if [ -n "$TMUX" ] || [[ "$TERM" == screen* ]] || [[ "$TERM" == tmux* ]]; then
-    # Wrap OSC52 in Tmux passthrough sequence
+    # Single passthrough (for 1 layer of tmux)
     printf "\033Ptmux;\033\033\033]52;c;%s\007\033\\" "$b64" > /dev/tty
+    # Double passthrough (for 2 layers of tmux, e.g. remote-tmux inside local-tmux)
+    printf "\033Ptmux;\033\033\033Ptmux;\033\033\033\033\033\033]52;c;%s\007\033\033\\\033\\" "$b64" > /dev/tty
 else
     printf "\033]52;c;%s\007" "$b64" > /dev/tty
 fi
