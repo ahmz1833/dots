@@ -261,7 +261,25 @@ else
 fi
 
 show_progress "Setting up symlinks..."
-link_file "${HOME_DIR}/dots/shell/.zshrc" "${HOME_DIR}/.zshrc"
+link_file "${HOME_DIR}/dots/shell/.zshrc" "${HOME_DIR}/.zshrc.common"
+
+if [ -L "${HOME_DIR}/.zshrc" ] && [ "$(readlink "${HOME_DIR}/.zshrc")" = "${HOME_DIR}/dots/shell/.zshrc" ]; then
+    show_warning "Removing old symlinked .zshrc..."
+    rm -f "${HOME_DIR}/.zshrc"
+    HAS_CHANGED=1
+fi
+
+if [ ! -f "${HOME_DIR}/.zshrc" ]; then
+    echo "source ~/.zshrc.common" > "${HOME_DIR}/.zshrc"
+    HAS_CHANGED=1
+    show_success "Created new ~/.zshrc sourcing .zshrc.common"
+elif ! grep -q "source ~/.zshrc.common" "${HOME_DIR}/.zshrc"; then
+    show_warning "Prepending source to existing ~/.zshrc..."
+    echo "source ~/.zshrc.common" | cat - "${HOME_DIR}/.zshrc" > "${HOME_DIR}/.zshrc.tmp"
+    mv "${HOME_DIR}/.zshrc.tmp" "${HOME_DIR}/.zshrc"
+    HAS_CHANGED=1
+    show_success "Updated ~/.zshrc to source .zshrc.common"
+fi
 
 mkdir -p "${HOME_DIR}/.config"
 link_file "${HOME_DIR}/dots/shell/starship.toml" "${HOME_DIR}/.config/starship.toml"

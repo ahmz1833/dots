@@ -181,6 +181,14 @@ vnoremap <silent> <leader>c y:call SendOSC52(@")<CR>
 vnoremap <silent> "+y y:call SendOSC52(@")<CR>
 nnoremap <silent> "+y yy:call SendOSC52(@")<CR>
 
+" Automatically copy all yanks to the system clipboard via OSC52
+if exists('##TextYankPost')
+    augroup OSC52Yank
+        autocmd!
+        autocmd TextYankPost * if v:event.operator ==# 'y' | call SendOSC52(getreg(v:event.regname == "" ? '"' : v:event.regname)) | endif
+    augroup END
+endif
+
 " Basic file ops
 nnoremap <leader>w :w<CR>
 nnoremap <leader>q :q<CR>

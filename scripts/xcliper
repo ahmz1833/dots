@@ -1,20 +1,29 @@
-xcliper() {
-    if command -v pbcopy >/dev/null 2>&1; then
-        pbcopy "$@"
-    elif command -v wl-copy >/dev/null 2>&1; then
-        wl-copy "$@"
-    elif command -v xclip >/dev/null 2>&1; then
-        xclip -selection clipboard "$@"
-    elif command -v xsel >/dev/null 2>&1; then
-        xsel --clipboard --input "$@"
-    elif command -v clip.exe >/dev/null 2>&1; then
-        clip.exe "$@"
-    elif command -v termux-clipboard-set >/dev/null 2>&1; then
-        termux-clipboard-set "$@"
-    else
-        echo "Error: No clipboard utility found." >&2
-        return 1
-    fi
-}
+#!/usr/bin/env bash
 
-xcliper "$@"
+# Read stdin into a variable
+TEXT=$(cat)
+
+# 1. Attempt local clipboard tools
+if command -v pbcopy >/dev/null 2>&1; then
+    printf "%s" "$TEXT" | pbcopy "$@"
+elif command -v wl-copy >/dev/null 2>&1; then
+    printf "%s" "$TEXT" | wl-copy "$@"
+elif command -v xclip >/dev/null 2>&1; then
+    printf "%s" "$TEXT" | xclip -selection clipboard "$@"
+elif command -v xsel >/dev/null 2>&1; then
+    printf "%s" "$TEXT" | xsel --clipboard --input "$@"
+elif command -v clip.exe >/dev/null 2>&1; then
+    printf "%s" "$TEXT" | clip.exe "$@"
+elif command -v termux-clipboard-set >/dev/null 2>&1; then
+    printf "%s" "$TEXT" | termux-clipboard-set "$@"
+fi
+
+# 2. Always send OSC52 to /dev/tty (handles SSH and fallback cases)
+b64=$(printf "%s" "$TEXT" | base64 | tr -d '\n' | tr -d '\r')
+
+if [ -n "$TMUX" ]; then
+    # Wrap OSC52 in Tmux passthrough sequence
+    printf "\033Ptmux;\033\033\033]52;c;%s\007\033\\" "$b64" > /dev/tty
+else
+    printf "\033]52;c;%s\007" "$b64" > /dev/tty
+fi
