@@ -6,7 +6,11 @@ TEXT=$(cat)
 # Find the correct TTY to write to (Tmux server daemon has no /dev/tty)
 OUT_TTY="/dev/tty"
 if [ -n "$TMUX" ]; then
-    CURRENT_TTY=$(tmux display-message -p '#{pane_tty}' 2>/dev/null)
+    # Prefer client_tty to bypass pane copy-mode buffering
+    CURRENT_TTY=$(tmux display-message -p '#{client_tty}' 2>/dev/null)
+    if [ -z "$CURRENT_TTY" ] || [ ! -w "$CURRENT_TTY" ]; then
+        CURRENT_TTY=$(tmux display-message -p '#{pane_tty}' 2>/dev/null)
+    fi
     if [ -n "$CURRENT_TTY" ] && [ -w "$CURRENT_TTY" ]; then
         OUT_TTY="$CURRENT_TTY"
     fi
