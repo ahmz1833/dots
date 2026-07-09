@@ -21,7 +21,7 @@ fi
 # 2. Always send OSC52 to /dev/tty (handles SSH and fallback cases)
 b64=$(printf "%s" "$TEXT" | base64 | tr -d '\n' | tr -d '\r')
 
-if [ -n "$TMUX" ]; then
+if [ -n "$TMUX" ] || [[ "$TERM" == screen* ]] || [[ "$TERM" == tmux* ]]; then
     # Wrap OSC52 in Tmux passthrough sequence
     printf "\033Ptmux;\033\033\033]52;c;%s\007\033\\" "$b64" > /dev/tty
 else

@@ -157,7 +157,7 @@ nnoremap <leader>r :call ToggleLineNumbers()<CR>
 function! SendOSC52(text)
     let l:b64 = system('base64 | tr -d "\n"', a:text)
     let l:osc = "\x1b]52;c;" . l:b64 . "\x07"
-    if !empty($TMUX)
+    if !empty($TMUX) || $TERM =~# '^screen' || $TERM =~# '^tmux'
         let l:osc = "\x1bPtmux;\x1b" . substitute(l:osc, "\x1b", "\x1b\x1b", 'g') . "\x1b\\"
     endif
     if exists('*echoraw')
