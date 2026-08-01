@@ -182,6 +182,8 @@ alias kex='k exec -it'
 alias kl='k logs'
 alias kdel='k delete'
 
+alias fixlf="find . -type f -not -path \"*/.git/*\" -not -path \"*/node_modules/*\" -exec perl -i -0777 -pe 's/\s*\z/\n/ if length' {} +"
+
 alias g='git'
 alias glog='git log --graph --color --decorate --oneline'
 alias gitlog='git log --all --color --decorate --graph'
