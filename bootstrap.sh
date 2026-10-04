@@ -9,6 +9,7 @@ GITHUB_REPO="dots"
 FETCH_MODE="interactive"
 S3_BUCKET_URL="https://s3.ahmz.ir/dots"
 SKIP_SUDO=0
+SKIP_KDE=0
 INSTALL_REGION=""
 HAS_CHANGED=0
 
@@ -16,6 +17,9 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --no-sudo)
             SKIP_SUDO=1
+            ;;
+        --no-kde)
+            SKIP_KDE=1
             ;;
         --iran)
             INSTALL_REGION="iran"
@@ -230,6 +234,15 @@ if [ -f "${DOTS_DIR}/tmux/install.sh" ]; then
     run_subscript bash "${DOTS_DIR}/tmux/install.sh"
 else
     show_message "Tmux install script not found. Skipping."
+fi
+
+if [ "$SKIP_KDE" -eq 1 ]; then
+    show_message "KDE setup skipped (--no-kde)."
+elif [ -f "${DOTS_DIR}/kde/install.sh" ]; then
+    show_progress "Executing KDE install script..."
+    run_subscript bash "${DOTS_DIR}/kde/install.sh" "${INSTALL_ARGS[@]}"
+else
+    show_message "KDE install script not found. Skipping."
 fi
 
 setup_scripts
