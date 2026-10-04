@@ -1,0 +1,47 @@
+# Dependencies of dots/kde, checked before anything is changed.
+# Only rows whose feature is enabled are checked (see config.sh).
+#
+# feature     check                          dnf (Fedora)                    apt (Debian/Ubuntu)         pacman (Arch)
+# check:  cmd:<binary>  font:<family, _ for space>  cmake:<package>  libexec:<binary>
+core          cmd:git                        git                             git                         git
+core          cmd:kwriteconfig6              kf6-kconfig                     libkf6config-bin            kconfig
+core          cmd:kreadconfig6               kf6-kconfig                     libkf6config-bin            kconfig
+core          cmd:dbus-send                  dbus-tools                      dbus-bin                    dbus
+core          cmd:busctl                     systemd                         systemd                     systemd
+core          cmd:sha256sum                  coreutils                       coreutils                   coreutils
+core          cmd:cmp                        diffutils                       diffutils                   diffutils
+fonts         cmd:fc-cache                   fontconfig                      fontconfig                  fontconfig
+fonts         font:Cantarell                 abattis-cantarell-fonts         fonts-cantarell             cantarell-fonts
+fonts         font:Noto_Sans                 google-noto-sans-fonts          fonts-noto-core             noto-fonts
+appearance    cmd:plasma-apply-colorscheme   plasma-workspace                plasma-workspace            plasma-workspace
+appearance    cmd:plasma-apply-desktoptheme  plasma-workspace                plasma-workspace            plasma-workspace
+appearance    cmd:plasma-apply-cursortheme   plasma-workspace                plasma-workspace            plasma-workspace
+appearance    libexec:plasma-changeicons     plasma-workspace                plasma-workspace            plasma-workspace
+orchis-gtk    cmd:sassc                      sassc                           sassc                       sassc
+oreo          cmd:ruby                       ruby                            ruby                        ruby
+oreo          cmd:inkscape                   inkscape                        inkscape                    inkscape
+oreo          cmd:xcursorgen                 xcursorgen                      x11-apps                    xorg-xcursorgen
+netspeed      cmd:kpackagetool6              kf6-kpackage                    kpackagetool6               kpackage
+klassy        cmd:sudo                       sudo                            sudo                        sudo
+klassy        cmd:cmake                      cmake                           cmake                       cmake
+klassy        cmd:make                       make                            make                        make
+klassy        cmd:g++                        gcc-c++                         g++                         gcc
+klassy        cmd:msgfmt                     gettext                         gettext                     gettext
+klassy        cmake:ECM                      extra-cmake-modules             extra-cmake-modules         extra-cmake-modules
+klassy        cmake:KDecoration3             cmake(KDecoration3)             libkdecorations3-dev        kdecoration
+klassy        cmake:KF6ColorScheme           cmake(KF6ColorScheme)           libkf6colorscheme-dev       kcolorscheme
+klassy        cmake:KF6Config                cmake(KF6Config)                libkf6config-dev            kconfig
+klassy        cmake:KF6ConfigWidgets         cmake(KF6ConfigWidgets)         libkf6configwidgets-dev     kconfigwidgets
+klassy        cmake:KF6CoreAddons            cmake(KF6CoreAddons)            libkf6coreaddons-dev        kcoreaddons
+klassy        cmake:KF6FrameworkIntegration  cmake(KF6FrameworkIntegration)  libkf6style-dev             frameworkintegration
+klassy        cmake:KF6GuiAddons             cmake(KF6GuiAddons)             libkf6guiaddons-dev         kguiaddons
+klassy        cmake:KF6I18n                  cmake(KF6I18n)                  libkf6i18n-dev              ki18n
+klassy        cmake:KF6IconThemes            cmake(KF6IconThemes)            libkf6iconthemes-dev        kiconthemes
+klassy        cmake:KF6KCMUtils              cmake(KF6KCMUtils)              libkf6kcmutils-dev          kcmutils
+klassy        cmake:KF6WindowSystem          cmake(KF6WindowSystem)          libkf6windowsystem-dev      kwindowsystem
+klassy        cmake:Qt6Core                  cmake(Qt6Core)                  qt6-base-dev                qt6-base
+klassy        cmake:Qt6DBus                  cmake(Qt6DBus)                  qt6-base-dev                qt6-base
+klassy        cmake:Qt6Widgets               cmake(Qt6Widgets)               qt6-base-dev                qt6-base
+klassy        cmake:Qt6Xml                   cmake(Qt6Xml)                   qt6-base-dev                qt6-base
+klassy        cmake:Qt6Quick                 cmake(Qt6Quick)                 qt6-declarative-dev         qt6-declarative
+klassy        cmake:Qt6Svg                   cmake(Qt6Svg)                   qt6-svg-dev                 qt6-svg
