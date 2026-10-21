@@ -303,15 +303,21 @@ json_list() {
 }
 
 apply_layout() {
-    local marker="$STATE_DIR/stamps/layout" launchers=() walls=() item dir config script reply
+    local marker="$STATE_DIR/stamps/layout" launchers=() walls=() item alt dir config script reply
     if [ "$DOTS_KDE_LAYOUT" = once ] && [ -f "$marker" ]; then
         return 0
     fi
     plasma_running || { show_warning "No running Plasma session; panel layout skipped."; return 0; }
+    # Each entry is "preferred://x", a desktop-file id, or "id1|id2" (first one installed wins).
     for item in $DOTS_KDE_PANEL_LAUNCHERS; do
         case "$item" in
             preferred://*) launchers+=("$item") ;;
-            *) desktop_file_exists "$item" && launchers+=("applications:$item.desktop") ;;
+            *)
+                IFS='|' read -r -a alts <<<"$item"
+                for alt in "${alts[@]}"; do
+                    desktop_file_exists "$alt" && { launchers+=("applications:$alt.desktop"); break; }
+                done
+                ;;
         esac
     done
     IFS=':' read -r -a dirs <<<"$DOTS_KDE_WALLPAPER_DIRS"

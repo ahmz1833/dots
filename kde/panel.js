@@ -17,8 +17,10 @@ if (cfg.launcherIcon) {
 }
 
 var tasks = panel.addWidget("org.kde.plasma.icontasks");
-tasks.currentConfigGroup = ["General"];
-tasks.writeConfig("launchers", cfg.launchers);
+if (cfg.launchers.length > 0) {
+    tasks.currentConfigGroup = ["General"];
+    tasks.writeConfig("launchers", cfg.launchers);
+}
 
 if (knownWidgetTypes.indexOf("org.kde.netspeedWidget") !== -1) {
     var net = panel.addWidget("org.kde.netspeedWidget");

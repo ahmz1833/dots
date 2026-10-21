@@ -25,7 +25,11 @@ Defaults (the reference laptop) and a description of every option are in
 DOTS_KDE_LAYOUT=never              # keep my panels
 DOTS_KDE_GET_OREO=0                # don't build the cursor theme
 DOTS_KDE_FONT_FIXED="JetBrains Mono"
+DOTS_KDE_PANEL_LAUNCHERS="org.kde.konsole preferred://browser code|com.microsoft.VSCode"
 ```
+
+Nothing personal is set by default: panel launchers and wallpaper folders are empty
+unless you set them. `a|b` means "the first one that is installed".
 
 Environment variables override that file, e.g. `DOTS_KDE_KLASSY=skip kde/install.sh`.
 

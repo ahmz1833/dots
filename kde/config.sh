@@ -76,7 +76,7 @@
 # ------------------------------------------------------- layout (panel) ---
 : "${DOTS_KDE_PANEL_HEIGHT:=40}"
 : "${DOTS_KDE_PANEL_FLOATING:=true}"
-: "${DOTS_KDE_PANEL_LAUNCHERS:=org.kde.konsole preferred://browser code preferred://filemanager com.mattermost.Desktop org.mozilla.firefox}"
+: "${DOTS_KDE_PANEL_LAUNCHERS:=}"        # optional pinned apps, space separated: preferred://browser, a desktop-file id, or id1|id2 (first installed wins). Empty keeps the Plasma default
 : "${DOTS_KDE_LAUNCHER_ICON:=}"        # e.g. fedora-logo-icon; empty keeps the Plasma default
 : "${DOTS_KDE_CLOCK_FIRST_DAY:=6}"     # 0 Sunday ... 6 Saturday
 : "${DOTS_KDE_WALLPAPER_DIRS:=}"          # optional, one slideshow folder per screen, ":" separated
