@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import re
+import shutil
+import sys
+import tempfile
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+
+
+ENTRY_HEADER_RE = re.compile(r"^: (\d+):(\d+);(.*)$", re.DOTALL)
+BASE64_PIPE_RE = re.compile(r"\becho\s+.*?\|\s*base64\b", re.IGNORECASE | re.DOTALL)
+
+SECRET_PATTERNS = [
+    (
+        re.compile(
+            r"(\b(?:export\s+)?(?:api_?key|access_?token|auth_?token|secret_?key|secret|password|passwd|token)\s*=\s*)(?:\"[^\"]*\"|'[^']*'|[^\s]+)",
+            re.IGNORECASE,
+        ),
+        r"\g<1>[REDACTED]",
+    ),
+    (
+        re.compile(r"(\bBearer\s+)[A-Za-z0-9_\-\.=]+", re.IGNORECASE),
+        r"\g<1>[REDACTED]",
+    ),
+    (
+        re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+        "[REDACTED]",
+    ),
+    (
+        re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{36,255}\b"),
+        "[REDACTED]",
+    ),
+    (
+        re.compile(r"\bxox[baprs]-[0-9a-zA-Z]{10,48}\b"),
+        "[REDACTED]",
+    ),
+    (
+        re.compile(
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
+        ),
+        "[REDACTED_PRIVATE_KEY]",
+    ),
+]
+
+
+class HistoryEntry:
+    def __init__(self, raw_header: str, command: str, is_extended: bool):
+        self.raw_header = raw_header
+        self.command = command
+        self.is_extended = is_extended
+
+    @property
+    def line_count(self) -> int:
+        return self.command.count("\n") + 1
+
+    def clean_trailing_empty(self):
+        cmd = self.command
+        while True:
+            cmd = cmd.rstrip("\r\n")
+            if cmd.endswith("\\"):
+                cmd = cmd[:-1].rstrip()
+            else:
+                break
+        self.command = cmd
+
+    def redact_secrets(self) -> bool:
+        modified = False
+        for pattern, replacement in SECRET_PATTERNS:
+            new_cmd, count = pattern.subn(replacement, self.command)
+            if count > 0:
+                self.command = new_cmd
+                modified = True
+        return modified
+
+    def render(self) -> str:
+        if self.is_extended:
+            return f"{self.raw_header}{self.command}\n"
+        return f"{self.command}\n"
+
+
+def parse_history(filepath: Path) -> list[HistoryEntry]:
+    entries = []
+    current_header = ""
+    current_cmd_lines = []
+    is_extended = False
+
+    with open(filepath, "r", encoding="utf-8", errors="surrogateescape") as f:
+        for line in f:
+            match = ENTRY_HEADER_RE.match(line)
+            if match:
+                if current_header or current_cmd_lines:
+                    entries.append(
+                        HistoryEntry(
+                            current_header,
+                            "".join(current_cmd_lines),
+                            is_extended,
+                        )
+                    )
+                is_extended = True
+                timestamp, duration, first_line = match.groups()
+                current_header = f": {timestamp}:{duration};"
+                current_cmd_lines = [first_line]
+            else:
+                if not entries and not current_header:
+                    is_extended = False
+                current_cmd_lines.append(line)
+
+    if current_header or current_cmd_lines:
+        entries.append(
+            HistoryEntry(
+                current_header, "".join(current_cmd_lines), is_extended
+            )
+        )
+
+    return entries
+
+
+def filter_entries(
+    entries: list[HistoryEntry],
+    max_lines: int = 20,
+    max_repeats: int = 3,
+) -> tuple[list[HistoryEntry], dict]:
+    stats = {
+        "initial": len(entries),
+        "removed_base64_pipes": 0,
+        "removed_over_lines": 0,
+        "removed_duplicates": 0,
+        "cleaned_empty_ends": 0,
+        "redacted_secrets": 0,
+    }
+
+    for entry in entries:
+        original = entry.command
+        entry.clean_trailing_empty()
+        if entry.command != original:
+            stats["cleaned_empty_ends"] += 1
+
+    base64_filtered = []
+    for entry in entries:
+        if BASE64_PIPE_RE.search(entry.command):
+            stats["removed_base64_pipes"] += 1
+        else:
+            base64_filtered.append(entry)
+
+    length_filtered = []
+    for entry in base64_filtered:
+        if entry.line_count > max_lines:
+            stats["removed_over_lines"] += 1
+        else:
+            length_filtered.append(entry)
+
+    for entry in length_filtered:
+        if entry.redact_secrets():
+            stats["redacted_secrets"] += 1
+
+    cmd_counts = Counter(e.command for e in length_filtered)
+    drop_counts = {
+        cmd: count - max_repeats
+        for cmd, count in cmd_counts.items()
+        if count > max_repeats
+    }
+
+    final_entries = []
+    for entry in length_filtered:
+        cmd = entry.command
+        if drop_counts.get(cmd, 0) > 0:
+            drop_counts[cmd] -= 1
+            stats["removed_duplicates"] += 1
+        else:
+            final_entries.append(entry)
+
+    stats["final"] = len(final_entries)
+    return final_entries, stats
+
+
+def write_history_atomically(target_path: Path, entries: list[HistoryEntry]):
+    target_dir = target_path.parent
+    with tempfile.NamedTemporaryFile(
+        "w",
+        dir=target_dir,
+        encoding="utf-8",
+        errors="surrogateescape",
+        delete=False,
+    ) as tmp:
+        for entry in entries:
+            tmp.write(entry.render())
+        tmp_name = tmp.name
+
+    shutil.copymode(target_path, tmp_name)
+    os.replace(tmp_name, target_path)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Clean, deduplicate, and redact sensitive entries in Zsh history."
+    )
+    parser.add_argument(
+        "--file",
+        default=os.path.expanduser("~/.zsh_history"),
+        help="Path to history file (default: ~/.zsh_history)",
+    )
+    parser.add_argument(
+        "--max-lines",
+        type=int,
+        default=20,
+        help="Remove entries exceeding this line count",
+    )
+    parser.add_argument(
+        "--max-repeats",
+        type=int,
+        default=3,
+        help="Maximum duplicate commands to keep (pruned from oldest)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview statistics without modifying the file",
+    )
+    args = parser.parse_args()
+
+    history_path = Path(args.file).resolve()
+    if not history_path.exists():
+        sys.stderr.write(f"History file not found: {history_path}\n")
+        sys.exit(1)
+
+    entries = parse_history(history_path)
+    cleaned_entries, stats = filter_entries(
+        entries,
+        max_lines=args.max_lines,
+        max_repeats=args.max_repeats,
+    )
+
+    print(f"Initial entries:           {stats['initial']}")
+    print(f"Cleaned trailing empties:  {stats['cleaned_empty_ends']}")
+    print(f"Removed base64 pipelines:  {stats['removed_base64_pipes']}")
+    print(f"Removed (> {args.max_lines} lines):      {stats['removed_over_lines']}")
+    print(f"Redacted secret entries:   {stats['redacted_secrets']}")
+    print(f"Pruned duplicates (> {args.max_repeats}):  {stats['removed_duplicates']}")
+    print(f"Final entries to keep:     {stats['final']}")
+
+    if args.dry_run:
+        print("\nDry run complete. No changes made.")
+        return
+
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    backup_path = history_path.with_name(f"{history_path.name}.bak.{timestamp}")
+    shutil.copy2(history_path, backup_path)
+    print(f"\nBackup saved to: {backup_path}")
+
+    write_history_atomically(history_path, cleaned_entries)
+    print("History file successfully updated.")
+
+
+if __name__ == "__main__":
+    main()

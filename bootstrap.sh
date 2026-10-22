@@ -9,7 +9,7 @@ GITHUB_REPO="dots"
 FETCH_MODE="interactive"
 S3_BUCKET_URL="https://s3.ahmz.ir/dots"
 SKIP_SUDO=0
-SKIP_KDE=0
+SKIP_KDE=1
 INSTALL_REGION=""
 HAS_CHANGED=0
 
@@ -18,8 +18,8 @@ while [ "$#" -gt 0 ]; do
         --no-sudo)
             SKIP_SUDO=1
             ;;
-        --no-kde)
-            SKIP_KDE=1
+        --bootstrap-kde)
+            SKIP_KDE=0
             ;;
         --iran)
             INSTALL_REGION="iran"
@@ -57,14 +57,14 @@ run_subscript() {
 
 fetch_dots() {
     local mode="$1"
-    
+
     if [ -d "$DOTS_DIR" ]; then
         if [ -d "$DOTS_DIR/.git" ]; then
             if [ "$mode" = "ssh" ] || [ "$mode" = "https" ]; then
                 show_progress "Updating existing git repository..."
                 local pull_output
                 pull_output=$(git -C "$DOTS_DIR" pull 2>&1) || show_error "Failed to pull git repository."
-                
+
                 if [[ "$pull_output" != *"Already up to date."* ]]; then
                     HAS_CHANGED=1
                     show_message "Repository updated."
@@ -102,7 +102,7 @@ fetch_dots() {
         raw|s3)
             local temp_dir tar_url
             temp_dir=$(mktemp -d)
-            
+
             if [ "$mode" = "raw" ]; then
                 show_progress "Downloading tarball from GitHub (Raw)..."
                 tar_url="https://github.com/${GITHUB_USER}/${GITHUB_REPO}/archive/refs/heads/main.tar.gz"
@@ -110,10 +110,10 @@ fetch_dots() {
                 show_progress "Downloading tarball from S3..."
                 tar_url="${S3_BUCKET_URL}/dots.tar.gz"
             fi
-            
+
             # Download and extract to the temporary directory first
             curl -fsSL "$tar_url" | tar -xz -C "$temp_dir" --strip-components=1
-            
+
             if [ -d "$DOTS_DIR" ]; then
                 # Compare temp directory against current dots directory
                 if diff -rq --exclude=".git" "$temp_dir" "$DOTS_DIR" >/dev/null 2>&1; then
@@ -129,7 +129,7 @@ fetch_dots() {
                 cp -a "$temp_dir/." "$DOTS_DIR/"
                 HAS_CHANGED=1
             fi
-            
+
             # Clean up
             rm -rf "$temp_dir"
             ;;
@@ -150,7 +150,7 @@ setup_scripts() {
                 local script_name
                 script_name=$(basename "$script")
                 local target_link="${bin_dir}/${script_name}"
-                
+
                 if [ ! -L "$target_link" ] || [ "$(readlink "$target_link")" != "$script" ]; then
                     ln -sf "$script" "$target_link"
                     show_message "Linked $script_name"
@@ -237,7 +237,7 @@ else
 fi
 
 if [ "$SKIP_KDE" -eq 1 ]; then
-    show_message "KDE setup skipped (--no-kde)."
+    show_message "KDE setup skipped."
 elif [ -f "${DOTS_DIR}/kde/install.sh" ]; then
     show_progress "Executing KDE install script..."
     run_subscript bash "${DOTS_DIR}/kde/install.sh" "${INSTALL_ARGS[@]}"
