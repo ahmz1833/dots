@@ -1,0 +1,72 @@
+<?xml version='1.0'?>
+<!DOCTYPE fontconfig SYSTEM 'urn:fontconfig:fonts.dtd'>
+<!-- Managed by dots/kde. Edit kde/assets/fontconfig in the dots repo, not this file.
+     KDE's font settings live in ../fonts.conf and are read after this file, so they win. -->
+<fontconfig>
+  <!-- UI font: @FONT_UI@ with Vazirmatn fallback for Persian -->
+  <alias>
+    <family>@FONT_UI@</family>
+    <prefer>
+      <family>@FONT_UI@</family>
+      <family>Vazirmatn</family>
+    </prefer>
+  </alias>
+
+  <!-- Arial (web/PDF) -> Parastoo WOL for Persian -->
+  <match>
+    <test name="family">
+      <string>Arial</string>
+    </test>
+    <edit binding="strong" mode="prepend" name="family">
+      <string>Parastoo WOL</string>
+    </edit>
+  </match>
+
+  <alias>
+    <family>system</family>
+    <prefer>
+      <family>system</family>
+      <family>sans-serif</family>
+    </prefer>
+  </alias>
+
+  <!-- Persian text prefers Vazirmatn everywhere else (sans-serif chain) -->
+  <alias>
+    <family>sans-serif</family>
+    <prefer>
+      <family>Noto Sans</family>
+      <family>@FONT_UI@</family>
+      <family>Vazirmatn</family>
+    </prefer>
+  </alias>
+
+  <!-- Monospace: nerd font first, Persian fallback via Vazir Code -->
+  <alias>
+    <family>monospace</family>
+    <prefer>
+      <family>@FONT_FIXED@</family>
+      <family>Vazir Code Hack Extra Height</family>
+    </prefer>
+  </alias>
+
+  <match target="font">
+    <edit mode="assign" name="hinting">
+      <bool>true</bool>
+    </edit>
+  </match>
+  <match target="font">
+    <edit mode="assign" name="hintstyle">
+      <const>hintslight</const>
+    </edit>
+  </match>
+  <match target="font">
+    <edit mode="assign" name="rgba">
+      <const>none</const>
+    </edit>
+  </match>
+  <match target="font">
+    <edit mode="assign" name="antialias">
+      <bool>true</bool>
+    </edit>
+  </match>
+</fontconfig>
