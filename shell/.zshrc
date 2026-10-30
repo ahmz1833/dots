@@ -193,7 +193,7 @@ alias grep='grep --color=auto'
 
 alias svim='EDITOR=vim sudoedit'
 alias svi='svim'
-alias ls='eza --icons'
+alias ls='eza --icons auto'
 alias la='ls -algi'
 alias l='ls -lahgi'
 alias lt='ls --tree'

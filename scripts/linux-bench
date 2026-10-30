@@ -1,0 +1,1098 @@
+#!/usr/bin/env bash
+#
+# linux-bench
+#
+# Portable Linux benchmark runner built on sysbench.
+# Scales from 1 vCPU / 1 GB VPSes and Raspberry Pis up to laptops and
+# multi-socket NUMA servers.
+#
+# Requirements:
+#   bash 4+, sysbench 1.0+, awk, coreutils (df, dd, mktemp, stat)
+#   optional: util-linux (lscpu, lsblk), procps (free), e2fsprogs (chattr)
+#
+# Usage:
+#   linux-bench [options] TEST...
+#   linux-bench all
+#   linux-bench cpu memory --threads 1,4,nproc
+#   linux-bench fileio --disk-dir /mnt/data --disk-size 4G
+#   linux-bench info | deps
+#
+# Run "linux-bench --help" for all options.
+
+if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    echo "linux-bench requires bash 4 or newer." >&2
+    exit 1
+fi
+
+set -uo pipefail
+export LC_NUMERIC=C
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+readonly VERSION="2.2"
+
+DURATION="${SB_TIME:-30}"            # seconds per run
+THREAD_SPEC="${SB_THREADS:-1,4}"     # thread counts; "nproc" = all CPUs
+DISK_DIR="${SB_FILE_DIR:-/var/tmp}"
+DISK_CAP_GB="${SB_FILE_CAP:-2}"
+DISK_SIZE="${SB_DISK_SIZE:-}"
+DIRECT_IO="${SB_DIRECT:-auto}"       # auto | 1 | 0
+QUIET="${SB_QUIET:-0}"
+
+readonly CPU_PRIME=20000
+readonly MEMORY_TOTAL="100T"         # effectively unlimited; --time bounds the run
+readonly MEMORY_BLOCK_MAX_MB=64      # per-thread buffer, larger than typical L3 slices
+readonly DISK_MAX_FILES=128
+readonly DISK_SEQ_BLOCK="1M"
+readonly DISK_RND_BLOCK="4K"
+
+# Score reference values: a run equal to these scores 1000 points.
+# Scores are unitless and comparable between machines (same sysbench version
+# and options). Higher is always better.
+declare -A REFERENCE=(
+    [cpu]=1000              # events/s (primes up to 20000, per thread)
+    [mem_read_seq]=10240    # MiB/s
+    [mem_write_seq]=8192    # MiB/s
+    [mem_read_rnd]=512      # MiB/s
+    [mem_write_rnd]=512     # MiB/s
+    [threads]=20000         # events/s
+    [mutex]=0.2             # seconds (lower is better)
+    [disk_seqrd]=500        # MiB/s
+    [disk_seqwr]=400        # MiB/s
+    [disk_rndrd]=10000      # IOPS
+    [disk_rndwr]=2000       # IOPS
+    [disk_rndrw]=2000       # IOPS
+)
+readonly LOWER_IS_BETTER=" mutex "
+
+THREADS=()                           # resolved thread counts
+RESULTS=()                           # "category|key|name|threads|log|status"
+SELECTED=()
+FAILED=0
+START_TIME=$SECONDS
+FILEIO_DIR=""                        # unique per-run dir inside DISK_DIR
+WORK_DIR=""
+
+# ============================================================
+# OUTPUT
+# ============================================================
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    RED=$'\e[31m' GREEN=$'\e[32m' YELLOW=$'\e[33m' BLUE=$'\e[34m'
+    CYAN=$'\e[36m' DIM=$'\e[2m' BOLD=$'\e[1m' RESET=$'\e[0m'
+else
+    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' DIM='' BOLD='' RESET=''
+fi
+
+if [[ "$(locale charmap 2>/dev/null)" == "UTF-8" ]]; then
+    B_H='─' B_V='│' B_TL='┌' B_TR='┐' B_BL='└' B_BR='┘'
+    B_LT='├' B_RT='┤' B_TT='┬' B_BT='┴' B_X='┼'
+    OK_MARK='✔' FAIL_MARK='✘' ARROW='▶' MICRO='µ'
+else
+    B_H='-' B_V='|' B_TL='+' B_TR='+' B_BL='+' B_BR='+'
+    B_LT='+' B_RT='+' B_TT='+' B_BT='+' B_X='+'
+    OK_MARK='+' FAIL_MARK='x' ARROW='>' MICRO='u'
+fi
+
+info()    { echo "${BLUE}[INFO]${RESET} $*"; }
+success() { echo "${GREEN}[ OK ]${RESET} $*"; }
+warning() { echo "${YELLOW}[WARN]${RESET} $*" >&2; }
+error()   { echo "${RED}[FAIL]${RESET} $*" >&2; }
+die()     { error "$*"; exit 1; }
+
+repeat() {
+    local out="" i
+    for ((i = 0; i < $2; i++)); do out+="$1"; done
+    printf '%s' "$out"
+}
+
+# pad TEXT WIDTH [l|r] -- pads by characters (UTF-8 safe).
+pad() {
+    local text="$1" width="$2" fill
+    fill=$(repeat ' ' $((width > ${#text} ? width - ${#text} : 0)))
+    if [[ "${3:-l}" == "r" ]]; then printf '%s%s' "$fill" "$text"
+    else printf '%s%s' "$text" "$fill"; fi
+}
+
+header() {
+    local line
+    line=$(repeat '=' 64)
+    echo
+    echo "${BOLD}${CYAN}${line}${RESET}"
+    echo "${BOLD}${CYAN} $*${RESET}"
+    echo "${BOLD}${CYAN}${line}${RESET}"
+}
+
+subheader() { echo; echo "${BOLD}$*${RESET}"; }
+
+kv() { printf '  %s%-15s%s %s\n' "$BOLD" "$1:" "$RESET" "$2"; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+join_by() { local IFS="$1"; shift; echo "$*"; }
+
+# ============================================================
+# DEPENDENCIES
+# ============================================================
+
+detect_pkg_manager() {
+    local pm
+    for pm in apt-get dnf yum pacman zypper apk xbps-install emerge; do
+        have "$pm" && { echo "$pm"; return; }
+    done
+    echo unknown
+}
+
+# pkg_for PKG_MANAGER COMMAND -> package name providing COMMAND
+pkg_for() {
+    local pm="$1" cmd="$2"
+    case "$cmd" in
+        sysbench)              echo sysbench ;;
+        awk)                   echo gawk ;;
+        df|dd|mktemp|stat|nproc) echo coreutils ;;
+        lscpu|lsblk)           echo util-linux ;;
+        chattr)                echo e2fsprogs ;;
+        free)
+            case "$pm" in
+                dnf|yum|pacman) echo procps-ng ;;
+                *)              echo procps ;;
+            esac ;;
+        *) echo "$cmd" ;;
+    esac
+}
+
+install_hint() {
+    local pm="$1"; shift
+    case "$pm" in
+        apt-get)      echo "sudo apt-get update && sudo apt-get install -y $*" ;;
+        dnf)          echo "sudo dnf install -y $*" ;;
+        yum)          echo "sudo yum install -y epel-release && sudo yum install -y $*" ;;
+        pacman)       echo "sudo pacman -S --needed $*" ;;
+        zypper)       echo "sudo zypper install -y $*" ;;
+        apk)          echo "sudo apk add $*" ;;
+        xbps-install) echo "sudo xbps-install -S $*" ;;
+        emerge)       echo "sudo emerge --ask $*" ;;
+        *)            echo "install with your package manager: $*" ;;
+    esac
+}
+
+# check_dependencies [verbose] -- exits if a required command is missing.
+check_dependencies() {
+    local verbose="${1:-0}"
+    local required=(sysbench awk df dd mktemp stat)
+    local optional=(lscpu lsblk free chattr)
+    local pm cmd pkg
+    local -a miss_req=() miss_opt=() pkgs_req=() pkgs_opt=()
+    pm=$(detect_pkg_manager)
+
+    for cmd in "${required[@]}"; do
+        have "$cmd" && continue
+        miss_req+=("$cmd")
+        pkg=$(pkg_for "$pm" "$cmd")
+        [[ " ${pkgs_req[*]} " == *" $pkg "* ]] || pkgs_req+=("$pkg")
+    done
+    for cmd in "${optional[@]}"; do
+        have "$cmd" && continue
+        miss_opt+=("$cmd")
+        pkg=$(pkg_for "$pm" "$cmd")
+        [[ " ${pkgs_opt[*]} " == *" $pkg "* ]] || pkgs_opt+=("$pkg")
+    done
+
+    if ((verbose)); then
+        header "DEPENDENCY CHECK"
+        kv "Bash" "${BASH_VERSION} ${GREEN}${OK_MARK}${RESET}"
+        for cmd in "${required[@]}" "${optional[@]}"; do
+            local kind="required"
+            [[ " ${optional[*]} " == *" $cmd "* ]] && kind="optional"
+            if have "$cmd"; then
+                kv "$cmd" "${GREEN}${OK_MARK} found${RESET} ${DIM}($kind)${RESET}"
+            elif [[ "$kind" == "required" ]]; then
+                kv "$cmd" "${RED}${FAIL_MARK} missing${RESET} ${DIM}(required, package: $(pkg_for "$pm" "$cmd"))${RESET}"
+            else
+                kv "$cmd" "${YELLOW}- missing${RESET} ${DIM}(optional, package: $(pkg_for "$pm" "$cmd"))${RESET}"
+            fi
+        done
+        echo
+    fi
+
+    if ((${#miss_opt[@]})) && { ((verbose)) || ((${#miss_req[@]})); }; then
+        warning "Optional tools missing: ${miss_opt[*]} (less detailed system info)"
+        warning "  $(install_hint "$pm" "${pkgs_opt[@]}")"
+    fi
+
+    if ((${#miss_req[@]})); then
+        error "Missing required tools: ${miss_req[*]}"
+        echo >&2
+        echo "  Install them with:" >&2
+        echo "    ${BOLD}$(install_hint "$pm" "${pkgs_req[@]}")${RESET}" >&2
+        if [[ " ${miss_req[*]} " == *" sysbench "* ]]; then
+            case "$pm" in
+                dnf|yum) echo "  ${DIM}(RHEL/Alma/Rocky: sysbench is in EPEL - 'sudo dnf install epel-release')${RESET}" >&2 ;;
+                zypper)  echo "  ${DIM}(openSUSE: sysbench is in the 'benchmark' OBS repository)${RESET}" >&2 ;;
+                apk)     echo "  ${DIM}(Alpine: enable the 'community' repository)${RESET}" >&2 ;;
+            esac
+        fi
+        echo >&2
+        exit 1
+    fi
+
+    ((verbose)) && success "All required dependencies are installed"
+    return 0
+}
+
+# ============================================================
+# CLEANUP / SIGNALS
+# ============================================================
+
+cleanup() {
+    if [[ -n "$FILEIO_DIR" && -d "$FILEIO_DIR" ]]; then
+        echo "${YELLOW}[WARN]${RESET} Removing disk benchmark files..." >&2
+        rm -rf -- "$FILEIO_DIR"
+    fi
+    [[ -n "$WORK_DIR" ]] && rm -rf -- "$WORK_DIR"
+}
+
+on_interrupt() {
+    trap - INT
+    echo
+    warning "Interrupted."
+    ((${#RESULTS[@]})) && show_summary
+    exit 130
+}
+
+trap cleanup EXIT
+trap on_interrupt INT
+trap 'exit 143' TERM
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+# size_to_mb 512M|2G|1T|1048576 -> MiB
+size_to_mb() {
+    local s="${1^^}"
+    s="${s%IB}"; s="${s%B}"
+    [[ "$s" =~ ^([0-9]+)([KMGT]?)$ ]] || return 1
+    local n="${BASH_REMATCH[1]}"
+    case "${BASH_REMATCH[2]}" in
+        K) echo $((n / 1024)) ;;
+        M) echo "$n" ;;
+        G) echo $((n * 1024)) ;;
+        T) echo $((n * 1024 * 1024)) ;;
+        *) echo $((n / 1048576)) ;;
+    esac
+}
+
+human_mb() {
+    awk -v m="$1" 'BEGIN {
+        if (m >= 1048576)   printf "%.1f TiB", m / 1048576
+        else if (m >= 1024) printf "%.1f GiB", m / 1024
+        else                printf "%d MiB", m
+    }'
+}
+
+human_secs() { printf '%dm %02ds' $(($1 / 60)) $(($1 % 60)); }
+
+meminfo_mb() {
+    awk -v k="$1:" '$1 == k { printf "%d", $2 / 1024 }' /proc/meminfo 2>/dev/null
+}
+
+# Resolve THREAD_SPEC ("1,4,nproc") into the THREADS array (deduplicated).
+resolve_threads() {
+    local token n
+    local -a tokens=()
+    local -A seen=()
+    THREADS=()
+    IFS=', ' read -r -a tokens <<<"$THREAD_SPEC"
+    for token in "${tokens[@]}"; do
+        [[ -z "$token" ]] && continue
+        case "${token,,}" in
+            nproc|all|max) n=$CPU_THREADS ;;
+            *)
+                [[ "$token" =~ ^[1-9][0-9]*$ ]] || die "Invalid thread count: '$token' (use numbers or 'nproc')"
+                n=$token ;;
+        esac
+        [[ -n "${seen[$n]:-}" ]] && continue
+        seen[$n]=1
+        THREADS+=("$n")
+    done
+    ((${#THREADS[@]})) || die "No thread counts given"
+}
+
+# Largest per-thread memory block (MiB) keeping the footprint under 1/4 of
+# available RAM, so tiny systems never swap or hit the OOM killer.
+memory_block_mb() {
+    local threads="$1" block=$MEMORY_BLOCK_MAX_MB
+    while ((block > 1 && block * threads * 4 > MEM_AVAILABLE_MB)); do
+        block=$((block / 2))
+    done
+    echo "$block"
+}
+
+# Integer with thousands separators.
+fmt_int() {
+    awk -v x="$1" 'BEGIN {
+        if (x == "" || x == "-") { print "-"; exit }
+        s = sprintf("%.0f", x); out = ""
+        while (length(s) > 3) { out = "," substr(s, length(s) - 2) out; s = substr(s, 1, length(s) - 3) }
+        print s out
+    }'
+}
+
+# Geometric mean of the numbers given as arguments ("-" if none).
+geomean() {
+    awk 'BEGIN {
+        for (i = 1; i < ARGC; i++) if (ARGV[i] > 0) { s += log(ARGV[i]); n++ }
+        if (n) printf "%.0f", exp(s / n); else print "-"
+    }' "$@"
+}
+
+# ============================================================
+# SYSTEM DETECTION
+# ============================================================
+
+CPU_THREADS=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
+((CPU_THREADS >= 1)) || CPU_THREADS=1
+
+MEM_TOTAL_MB=$(meminfo_mb MemTotal)
+MEM_AVAILABLE_MB=$(meminfo_mb MemAvailable)
+if [[ -z "$MEM_AVAILABLE_MB" ]]; then          # kernels older than 3.14
+    MEM_AVAILABLE_MB=$(( $(meminfo_mb MemFree || echo 0) + $(meminfo_mb Cached || echo 0) ))
+fi
+: "${MEM_TOTAL_MB:=1024}"
+((MEM_AVAILABLE_MB >= 64)) || MEM_AVAILABLE_MB=64
+
+NUMA_NODES=$(find /sys/devices/system/node -maxdepth 1 -name 'node[0-9]*' 2>/dev/null | wc -l)
+((NUMA_NODES >= 1)) || NUMA_NODES=1
+
+OS_NAME=$( (. /etc/os-release && echo "${PRETTY_NAME:-}") 2>/dev/null )
+: "${OS_NAME:=$(uname -s)}"
+
+detect_cpu_model() {
+    local model=""
+    have lscpu && model=$(LC_ALL=C lscpu 2>/dev/null |
+        awk -F: '/^Model name/ { sub(/^[ \t]+/, "", $2); print $2; exit }')
+    # Raspberry Pi and other ARM boards
+    [[ -z "$model" || "$model" == "-" ]] && model=$(awk -F: '/^(model name|Model|Hardware)[ \t]*:/ {
+        sub(/^[ \t]+/, "", $2); print $2; exit }' /proc/cpuinfo 2>/dev/null)
+    echo "${model:-$(uname -m)}"
+}
+CPU_MODEL=$(detect_cpu_model)
+
+HOSTNAME_STR=$(hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || echo unknown)
+
+detect_virt() {
+    local v=""
+    have systemd-detect-virt && v=$(systemd-detect-virt 2>/dev/null)
+    if [[ -z "$v" ]]; then
+        if grep -qw hypervisor /proc/cpuinfo 2>/dev/null; then v="vm"; else v="none"; fi
+    fi
+    echo "$v"
+}
+
+# ============================================================
+# RESULT PARSING
+# ============================================================
+
+# parse_result CATEGORY KEY LOG
+# Prints "human_result|lat_avg|lat_p95|raw_value|score".
+#   human_result: auto-scaled value with units (GiB/s, k IOPS, ...)
+#   score:        unitless, 1000 = REFERENCE value, higher is better
+parse_result() {
+    local category="$1" key="$2" log="$3"
+    local lower=0
+    [[ "$LOWER_IS_BETTER" == *" $key "* ]] && lower=1
+    awk -v cat="$category" -v key="$key" -v ref="${REFERENCE[$key]:-0}" \
+        -v lower="$lower" -v mu="$MICRO" '
+        # 3 significant digits
+        function sig(x) {
+            if (x >= 100) return sprintf("%.0f", x)
+            if (x >= 10)  return sprintf("%.1f", x)
+            return sprintf("%.2f", x)
+        }
+        # binary-scaled bandwidth from MiB/s
+        function bw(mib,    v, i, u) {
+            split("B/s KiB/s MiB/s GiB/s TiB/s", u, " ")
+            v = mib * 1048576; i = 1
+            while (v >= 1024 && i < 5) { v /= 1024; i++ }
+            return sig(v) " " u[i]
+        }
+        # SI-scaled rate: 1.39k events/s, 2.23M IOPS
+        function rate(x, unit,    i, p) {
+            split("- k M G", p, " ")
+            i = 1
+            while (x >= 1000 && i < 4) { x /= 1000; i++ }
+            return sig(x) (i > 1 ? p[i] : "") " " unit
+        }
+        # time from milliseconds -> ns/us/ms/s
+        function tm(ms) {
+            if (ms == "") return "-"
+            ms += 0
+            if (ms >= 1000) return sig(ms / 1000) " s"
+            if (ms >= 1)    return sig(ms) " ms"
+            if (ms > 0)     return sig(ms * 1000) " " mu "s"
+            return "<10 " mu "s"           # below sysbench resolution (0.01 ms)
+        }
+        /events per second:/      { eps = $NF }
+        /MiB transferred/         { if (match($0, /\([0-9.]+ MiB\/sec\)/)) mibs = substr($0, RSTART + 1, RLENGTH - 10) }
+        /^ *reads\/s:/            { rps = $NF }
+        /^ *writes\/s:/           { wps = $NF }
+        /^ *read, MiB\/s:/        { rmb = $NF }
+        /^ *written, MiB\/s:/     { wmb = $NF }
+        /^ *total time:/          { t = $NF; sub(/s$/, "", t) }
+        /total number of events:/ { ev = $NF }
+        /^ *avg:/                 { avg = $NF }
+        /95th percentile:/        { p95 = $NF }
+        END {
+            if (cat == "cpu")          { raw = eps + 0;               res = rate(raw, "events/s") }
+            else if (cat == "memory")  { raw = mibs + 0;              res = bw(raw) }
+            else if (cat == "threads") { raw = (t > 0) ? ev / t : 0;  res = rate(raw, "events/s") }
+            else if (cat == "mutex")   { raw = t + 0;                 res = tm(raw * 1000) }
+            else if (cat == "fileio") {
+                if (rmb > 0 && wmb > 0) b = "R " bw(rmb) " / W " bw(wmb)
+                else if (wmb > 0)       b = bw(wmb)
+                else                    b = bw(rmb)
+                if (key ~ /seq/) { raw = rmb + wmb; res = b }
+                else             { raw = rps + wps; res = rate(raw, "IOPS") " (" b ")" }
+            }
+            if (ref > 0 && raw > 0) score = lower ? 1000 * ref / raw : 1000 * raw / ref
+            else                    score = 0
+            printf "%s|%s|%s|%s|%.0f\n", res, tm(avg), tm(p95), raw, score
+        }
+    ' "$log"
+}
+
+# ============================================================
+# TEST EXECUTION
+# ============================================================
+
+# Record a failure that happened before any sysbench run (shown in summary).
+setup_failed() {
+    RESULTS+=("${2:-fileio}|setup|$1|-||fail")
+    FAILED=$((FAILED + 1))
+}
+
+# run_test CATEGORY KEY NAME THREADS COMMAND...
+run_test() {
+    local category="$1" key="$2" name="$3" threads="$4"
+    shift 4
+
+    local log="$WORK_DIR/${#RESULTS[@]}.log" rc
+    local label="$name ($threads thread$( ((threads > 1)) && echo s))"
+
+    if [[ "$QUIET" == "1" ]]; then
+        printf '  %s %s ' "${CYAN}${ARROW}${RESET}" "$(pad "$label" 38)"
+        "$@" >"$log" 2>&1
+        rc=$?
+    else
+        header "$label"
+        "$@" 2>&1 | tee "$log"
+        rc=$?
+    fi
+
+    # sysbench may exit 0 after printing a FATAL error.
+    if ((rc == 0)) && ! grep -q '^FATAL' "$log"; then
+        RESULTS+=("$category|$key|$name|$threads|$log|ok")
+        local res score
+        IFS='|' read -r res _ _ _ score <<<"$(parse_result "$category" "$key" "$log")"
+        if [[ "$QUIET" == "1" ]]; then
+            echo "${GREEN}${OK_MARK}${RESET} $(pad "$res" 30) ${DIM}score $(fmt_int "$score")${RESET}"
+        else
+            success "$label: $res (score $(fmt_int "$score"))"
+        fi
+        return 0
+    fi
+
+    RESULTS+=("$category|$key|$name|$threads|$log|fail")
+    FAILED=$((FAILED + 1))
+    if [[ "$QUIET" == "1" ]]; then
+        echo "${RED}${FAIL_MARK} failed${RESET}"
+        grep -m3 -iE 'fatal|error' "$log" | sed 's/^/      /' >&2
+    else
+        error "$label failed (exit $rc)"
+    fi
+    return 1
+}
+
+# ============================================================
+# BENCHMARKS
+# ============================================================
+
+test_cpu() {
+    local t
+    for t in "${THREADS[@]}"; do
+        run_test cpu cpu "CPU primes" "$t" \
+            sysbench cpu --cpu-max-prime="$CPU_PRIME" \
+            --threads="$t" --time="$DURATION" run
+    done
+}
+
+test_memory() {
+    local t op mode block
+    for t in "${THREADS[@]}"; do
+        block=$(memory_block_mb "$t")
+        for op in read write; do
+            for mode in seq rnd; do
+                run_test memory "mem_${op}_${mode}" "Memory $op $mode" "$t" \
+                    sysbench memory \
+                    --memory-oper="$op" \
+                    --memory-access-mode="$mode" \
+                    --memory-block-size="${block}M" \
+                    --memory-total-size="$MEMORY_TOTAL" \
+                    --threads="$t" --time="$DURATION" run
+            done
+        done
+    done
+}
+
+test_threads() {
+    local t
+    for t in "${THREADS[@]}"; do
+        run_test threads threads "Thread scheduler" "$t" \
+            sysbench threads --thread-yields=100 --thread-locks=4 \
+            --threads="$t" --time="$DURATION" run
+    done
+}
+
+# Fixed amount of work per thread: lower total time is better.
+test_mutex() {
+    local t
+    for t in "${THREADS[@]}"; do
+        run_test mutex mutex "Mutex contention" "$t" \
+            sysbench mutex --mutex-num=4096 --mutex-locks=50000 --mutex-loops=10000 \
+            --threads="$t" --time="$DURATION" run
+    done
+}
+
+# ------------------------------------------------------------
+# Disk
+# ------------------------------------------------------------
+
+FILEIO_SIZE_MB=0
+FILEIO_FILES=0
+
+plan_disk_size() {
+    local avail_mb size_mb reserve
+    avail_mb=$(df -Pk -- "$DISK_DIR" 2>/dev/null | awk 'NR == 2 { printf "%d", $4 / 1024 }')
+    [[ -n "$avail_mb" ]] || { error "Cannot determine free space in $DISK_DIR"; return 1; }
+
+    if [[ -n "$DISK_SIZE" ]]; then
+        size_mb=$(size_to_mb "$DISK_SIZE") || { error "Invalid disk size: $DISK_SIZE (e.g. 512M, 4G)"; return 1; }
+    else
+        size_mb=$((avail_mb / 10))                                        # 10% of free space,
+        ((size_mb > DISK_CAP_GB * 1024)) && size_mb=$((DISK_CAP_GB * 1024))  # capped
+    fi
+    ((size_mb >= 16)) || size_mb=16
+
+    # Always leave 10% (min 256 MiB) of the filesystem free.
+    reserve=$((avail_mb / 10))
+    ((reserve >= 256)) || reserve=256
+    if ((size_mb + reserve > avail_mb)); then
+        error "Not enough free space in $DISK_DIR: need $(human_mb $((size_mb + reserve))), have $(human_mb "$avail_mb")"
+        return 1
+    fi
+
+    # Whole MiB per file keeps 1M and 4K blocks aligned (needed for O_DIRECT).
+    FILEIO_FILES=$DISK_MAX_FILES
+    ((FILEIO_FILES > size_mb)) && FILEIO_FILES=$size_mb
+    FILEIO_SIZE_MB=$(((size_mb / FILEIO_FILES) * FILEIO_FILES))
+}
+
+direct_io_supported() {
+    local probe="$FILEIO_DIR/.direct-probe" ok=1
+    dd if=/dev/zero of="$probe" bs=4096 count=1 oflag=direct >/dev/null 2>&1 && ok=0
+    rm -f -- "$probe"
+    return $ok
+}
+
+drop_caches() {
+    sync
+    ((EUID == 0)) && echo 3 >/proc/sys/vm/drop_caches 2>/dev/null
+    return 0
+}
+
+# sysbench fileio has no directory option; it always works in the CWD.
+sb_fileio() {
+    (cd -- "$FILEIO_DIR" && exec sysbench fileio "$@")
+}
+
+test_fileio() {
+    header "Disk benchmark setup"
+
+    mkdir -p -- "$DISK_DIR" 2>/dev/null
+    if [[ ! -d "$DISK_DIR" || ! -w "$DISK_DIR" ]]; then
+        error "Disk directory $DISK_DIR does not exist or is not writable"
+        setup_failed "Disk setup"; return 1
+    fi
+
+    plan_disk_size || { setup_failed "Disk setup"; return 1; }
+
+    FILEIO_DIR=$(mktemp -d "$DISK_DIR/linux-bench-fileio.XXXXXX") || {
+        error "Cannot create a working directory inside $DISK_DIR"
+        FILEIO_DIR=""; setup_failed "Disk setup"; return 1
+    }
+
+    local fstype
+    fstype=$(stat -f -c %T -- "$FILEIO_DIR" 2>/dev/null || echo unknown)
+    case "$fstype" in
+        tmpfs|ramfs)
+            warning "$DISK_DIR is on $fstype (RAM): results will not reflect a real disk."
+            warning "Use --disk-dir to point at the disk you want to test." ;;
+        btrfs)
+            # NOCOW disables compression/checksums for new files; otherwise btrfs
+            # compresses sysbench's zero-filled data and serves O_DIRECT from cache.
+            if ! { have chattr && chattr +C -- "$FILEIO_DIR" 2>/dev/null; }; then
+                warning "Could not set NOCOW on $FILEIO_DIR: btrfs compression may inflate results."
+            fi ;;
+        zfs)
+            warning "ZFS: compression and ARC caching may inflate results (sysbench writes zeros)." ;;
+    esac
+
+    case "$DIRECT_IO" in
+        auto) if direct_io_supported; then DIRECT_IO=1; else DIRECT_IO=0; fi ;;
+        1)    direct_io_supported || { warning "O_DIRECT unsupported on $fstype; using buffered I/O."; DIRECT_IO=0; } ;;
+    esac
+
+    local common=(--file-total-size="${FILEIO_SIZE_MB}M" --file-num="$FILEIO_FILES")
+    local flags=()
+    [[ "$DIRECT_IO" == "1" ]] && flags=(--file-extra-flags=direct)
+
+    kv "Directory" "$FILEIO_DIR"
+    kv "Filesystem" "$fstype"
+    kv "Dataset" "$(human_mb "$FILEIO_SIZE_MB") in $FILEIO_FILES files"
+    kv "Sequential" "$DISK_SEQ_BLOCK blocks, threads: 1"
+    kv "Random" "$DISK_RND_BLOCK blocks, threads: $(join_by , "${THREADS[@]}")"
+    kv "I/O mode" "$( [[ "$DIRECT_IO" == "1" ]] && echo "direct (O_DIRECT, bypasses page cache)" || echo buffered )"
+
+    if [[ "$DIRECT_IO" != "1" ]] && ((EUID != 0 && FILEIO_SIZE_MB < MEM_TOTAL_MB * 2)); then
+        warning "Buffered I/O without root: the page cache cannot be dropped and the"
+        warning "dataset is smaller than 2x RAM, so read results will be inflated."
+    fi
+
+    info "Preparing test files (this may take a while on slow storage)..."
+    local prep_log="$WORK_DIR/fileio-prepare.log"
+    if ! sb_fileio "${common[@]}" prepare >"$prep_log" 2>&1 || grep -q '^FATAL' "$prep_log"; then
+        tail -n 5 "$prep_log" >&2
+        error "Disk preparation failed"
+        rm -rf -- "$FILEIO_DIR"; FILEIO_DIR=""
+        setup_failed "Disk setup"; return 1
+    fi
+    success "$(tail -n 1 "$prep_log")"
+
+    # name|mode|block|threads
+    local plan=(
+        "Disk seq read $DISK_SEQ_BLOCK|seqrd|$DISK_SEQ_BLOCK|1"
+        "Disk seq write $DISK_SEQ_BLOCK|seqwr|$DISK_SEQ_BLOCK|1"
+    )
+    local t mode
+    for mode in "rndrd:rand read" "rndwr:rand write" "rndrw:rand r/w"; do
+        for t in "${THREADS[@]}"; do
+            plan+=("Disk ${mode#*:} $DISK_RND_BLOCK|${mode%%:*}|$DISK_RND_BLOCK|$t")
+        done
+    done
+
+    local entry name block threads
+    for entry in "${plan[@]}"; do
+        IFS='|' read -r name mode block threads <<<"$entry"
+        [[ "$DIRECT_IO" != "1" ]] && drop_caches
+        run_test fileio "disk_$mode" "$name" "$threads" \
+            sb_fileio "${common[@]}" "${flags[@]}" \
+            --file-test-mode="$mode" --file-block-size="$block" \
+            --threads="$threads" --time="$DURATION" --events=0 run
+    done
+
+    sb_fileio "${common[@]}" cleanup >/dev/null 2>&1
+    rm -rf -- "$FILEIO_DIR"
+    FILEIO_DIR=""
+    [[ "$QUIET" == "1" ]] || success "Disk benchmark files removed"
+}
+
+# ============================================================
+# SYSTEM INFORMATION
+# ============================================================
+
+show_info() {
+    header "SYSTEM INFORMATION"
+    kv "Hostname" "$HOSTNAME_STR"
+    kv "OS" "$OS_NAME"
+    kv "Kernel" "$(uname -r) ($(uname -m))"
+    kv "Virtualization" "$(detect_virt)"
+    kv "CPU" "$CPU_MODEL"
+    kv "Logical CPUs" "$CPU_THREADS"
+    kv "NUMA nodes" "$NUMA_NODES"
+    kv "Memory" "$(human_mb "$MEM_AVAILABLE_MB") available / $(human_mb "$MEM_TOTAL_MB") total"
+
+    if have lscpu; then
+        subheader "CPU topology:"
+        LC_ALL=C lscpu 2>/dev/null | grep -E \
+            '^(Architecture|Socket|Core|Thread|CPU\(s\):|NUMA node|CPU max MHz|L[123][di]? cache)' |
+            sed 's/^/  /'
+    fi
+
+    if have free; then
+        subheader "Memory:"
+        free -h 2>/dev/null | sed 's/^/  /'
+    fi
+
+    if have lsblk; then
+        subheader "Block devices:"
+        { lsblk -e7 -o NAME,TYPE,SIZE,ROTA,MODEL,FSTYPE,MOUNTPOINTS 2>/dev/null ||
+          lsblk -e7 -o NAME,TYPE,SIZE,ROTA,MODEL,FSTYPE,MOUNTPOINT 2>/dev/null; } | sed 's/^/  /'
+    fi
+}
+
+# ============================================================
+# TABLE RENDERING
+# ============================================================
+#
+# Fill TBL_HEAD, TBL_ALIGN (l/r per column), TBL_ROWS (cells joined by TAB,
+# or "--" for a separator) and optionally TBL_STYLE (per row: ""|fail|bold)
+# and TBL_HL (index of a column to highlight), then call render_table.
+
+TBL_HEAD=() TBL_ALIGN=() TBL_ROWS=() TBL_STYLE=()
+TBL_HL=-1
+
+table_rule() {
+    local out="$1" j
+    for ((j = 0; j < ${#TW[@]}; j++)); do
+        ((j > 0)) && out+="$2"
+        out+=$(repeat "$B_H" $((TW[j] + 2)))
+    done
+    echo "${DIM}${out}${3}${RESET}"
+}
+
+render_table() {
+    local ncol=${#TBL_HEAD[@]} j i row style color
+    local -a cells
+    TW=()
+    for ((j = 0; j < ncol; j++)); do TW[j]=${#TBL_HEAD[j]}; done
+    for row in "${TBL_ROWS[@]}"; do
+        [[ "$row" == "--" ]] && continue
+        IFS=$'\t' read -r -a cells <<<"$row"
+        for ((j = 0; j < ncol; j++)); do
+            ((${#cells[j]} > TW[j])) && TW[j]=${#cells[j]}
+        done
+    done
+
+    local V="${DIM}${B_V}${RESET}" line
+    table_rule "$B_TL" "$B_TT" "$B_TR"
+    line="$V"
+    for ((j = 0; j < ncol; j++)); do
+        line+=" ${BOLD}$(pad "${TBL_HEAD[j]}" "${TW[j]}" "${TBL_ALIGN[j]}")${RESET} $V"
+    done
+    echo "$line"
+    table_rule "$B_LT" "$B_X" "$B_RT"
+
+    for ((i = 0; i < ${#TBL_ROWS[@]}; i++)); do
+        row=${TBL_ROWS[i]}
+        if [[ "$row" == "--" ]]; then
+            table_rule "$B_LT" "$B_X" "$B_RT"
+            continue
+        fi
+        style=${TBL_STYLE[i]:-}
+        IFS=$'\t' read -r -a cells <<<"$row"
+        line="$V"
+        for ((j = 0; j < ncol; j++)); do
+            color=""
+            if [[ "$style" == "fail" ]]; then color=$RED
+            elif [[ "$style" == "bold" ]]; then color=$BOLD
+            elif ((j == TBL_HL)); then color=$CYAN
+            fi
+            line+=" ${color}$(pad "${cells[j]:-}" "${TW[j]}" "${TBL_ALIGN[j]}")${color:+$RESET} $V"
+        done
+        echo "$line"
+    done
+    table_rule "$B_BL" "$B_BT" "$B_BR"
+}
+
+# ============================================================
+# SUMMARY
+# ============================================================
+
+category_label() {
+    case "$1" in
+        cpu) echo CPU ;; memory) echo Memory ;; threads) echo Threads ;;
+        mutex) echo Mutex ;; fileio) echo Disk ;; *) echo "$1" ;;
+    esac
+}
+
+show_summary() {
+    header "BENCHMARK SUMMARY"
+
+    if ((${#RESULTS[@]} == 0)); then
+        warning "No benchmarks were run."
+        return
+    fi
+
+    # ---- Detailed results -------------------------------------------------
+    TBL_HEAD=("Test" "Threads" "Result" "Latency avg" "Latency p95" "Score")
+    TBL_ALIGN=(l r l r r r)
+    TBL_ROWS=() TBL_STYLE=() TBL_HL=2
+
+    local -A cat_scores=()     # "category|threads" -> "s1 s2 ..."
+    local disk_seq_scores=""   # sequential disk runs are single-threaded only
+    local -a cats_seen=()
+    local entry category key name threads log status res avg p95 raw score prev=""
+
+    for entry in "${RESULTS[@]}"; do
+        IFS='|' read -r category key name threads log status <<<"$entry"
+
+        if [[ "$category" != "$prev" ]]; then
+            [[ -n "$prev" ]] && { TBL_ROWS+=("--"); TBL_STYLE+=(""); }
+            cats_seen+=("$category")
+            prev=$category
+        fi
+
+        if [[ "$status" == "ok" ]]; then
+            IFS='|' read -r res avg p95 raw score <<<"$(parse_result "$category" "$key" "$log")"
+            TBL_ROWS+=("$name"$'\t'"$threads"$'\t'"$res"$'\t'"$avg"$'\t'"$p95"$'\t'"$(fmt_int "$score")")
+            TBL_STYLE+=("")
+            if [[ "$key" == disk_seq* ]]; then
+                disk_seq_scores+=" $score"
+            else
+                cat_scores["$category|$threads"]+=" $score"
+            fi
+        else
+            TBL_ROWS+=("$name"$'\t'"$threads"$'\t'"FAILED"$'\t'"-"$'\t'"-"$'\t'"-")
+            TBL_STYLE+=("fail")
+        fi
+    done
+
+    subheader "Results"
+    render_table
+
+    # ---- Comparable scores ------------------------------------------------
+    # Per category and thread count: geometric mean of the run scores.
+    # Disk combines the single-threaded sequential runs with the random runs
+    # at each thread count.
+    local t c list cs
+    local -A overall=()
+    TBL_HEAD=("Score")
+    TBL_ALIGN=(l)
+    for t in "${THREADS[@]}"; do
+        TBL_HEAD+=("$t thread$( ((t > 1)) && echo s)")
+        TBL_ALIGN+=(r)
+    done
+    TBL_ROWS=() TBL_STYLE=() TBL_HL=-1
+
+    local have_scores=0
+    for c in "${cats_seen[@]}"; do
+        local row
+        row=$(category_label "$c")
+        for t in "${THREADS[@]}"; do
+            list="${cat_scores["$c|$t"]:-}"
+            [[ "$c" == "fileio" && -n "$list" ]] && list+="$disk_seq_scores"
+            # shellcheck disable=SC2086
+            cs=$(geomean $list)
+            [[ "$cs" != "-" ]] && { overall[$t]+=" $cs"; have_scores=1; }
+            row+=$'\t'"$(fmt_int "$cs")"
+        done
+        TBL_ROWS+=("$row"); TBL_STYLE+=("")
+    done
+
+    if ((have_scores)); then
+        local row="Overall"
+        for t in "${THREADS[@]}"; do
+            # shellcheck disable=SC2086
+            row+=$'\t'"$(fmt_int "$(geomean ${overall[$t]:-})")"
+        done
+        TBL_ROWS+=("--" "$row"); TBL_STYLE+=("" "bold")
+
+        subheader "Comparable scores"
+        render_table
+        echo "  ${DIM}Unitless; 1000 = reference machine, higher is better (2000 = twice as fast)."
+        echo "  Compare between systems only for the same thread count, tests and sysbench version.${RESET}"
+    fi
+
+    # ---- Totals -----------------------------------------------------------
+    local total=${#RESULTS[@]}
+    local passed=$((total - FAILED))
+    ((passed >= 0)) || passed=0
+    echo
+    printf '  %sPassed:%s %s%d%s   %sFailed:%s %s%d%s   %sElapsed:%s %s   %sSystem:%s %s\n' \
+        "$BOLD" "$RESET" "$GREEN" "$passed" "$RESET" \
+        "$BOLD" "$RESET" "$( ((FAILED)) && echo "$RED")" "$FAILED" "$RESET" \
+        "$BOLD" "$RESET" "$(human_secs $((SECONDS - START_TIME)))" \
+        "$BOLD" "$RESET" "$CPU_MODEL, ${CPU_THREADS} CPUs, $(human_mb "$MEM_TOTAL_MB")"
+    echo
+
+    if ((FAILED == 0)); then
+        success "Benchmark suite completed successfully"
+    else
+        warning "$FAILED benchmark(s) failed"
+    fi
+}
+
+# ============================================================
+# HELP
+# ============================================================
+
+show_help() {
+    local me
+    me=$(basename -- "$0")
+    cat <<EOF
+${BOLD}Linux Benchmark Runner v$VERSION${RESET} (sysbench)
+
+${BOLD}Usage:${RESET}
+  $me [options] TEST...
+
+${BOLD}Tests:${RESET}
+  all        cpu + memory + threads + mutex + fileio
+  cpu        Prime number computation
+  memory     Sequential / random memory read & write
+  threads    Thread scheduler (yield + lock)
+  mutex      Mutex contention
+  fileio     Sequential ($DISK_SEQ_BLOCK) and random ($DISK_RND_BLOCK) disk I/O
+  info       Show system information
+  deps       Check dependencies and print install commands
+
+${BOLD}Options:${RESET}
+  -n, --threads LIST    Comma-separated thread counts (default: 1,4).
+                        Use "nproc" for all logical CPUs, e.g. 1,4,nproc
+  -a, --all-cores       Shortcut: add nproc ($CPU_THREADS) to the thread list
+  -t, --time N          Seconds per run (default: 30)
+  -d, --disk-dir PATH   Directory on the disk to test (default: /var/tmp)
+  -s, --disk-size SIZE  Disk dataset size, e.g. 512M, 4G
+                        (default: 10% of free space, max ${DISK_CAP_GB}G)
+      --direct          Force O_DIRECT disk I/O
+      --buffered        Force buffered disk I/O (default: direct if supported)
+  -q, --quiet           Compact output: one line per run plus the summary
+  -h, --help            Show this help
+
+${BOLD}Scores:${RESET}
+  Every run also gets a unitless score (1000 = reference machine, higher is
+  better), and the summary shows per-category and overall scores (geometric
+  means) for each thread count, comparable between systems.
+
+${BOLD}Examples:${RESET}
+  $me all
+  $me all -q -t 10
+  $me cpu memory --threads 1,4,nproc
+  $me fileio -d /mnt/nvme -s 4G
+  $me deps
+
+${BOLD}Environment:${RESET}
+  SB_TIME SB_THREADS SB_FILE_DIR SB_FILE_CAP(GiB) SB_DISK_SIZE
+  SB_DIRECT(auto|1|0) SB_QUIET NO_COLOR
+EOF
+}
+
+# ============================================================
+# ARGUMENT PARSING
+# ============================================================
+
+TESTS=()
+ALL_CORES=0
+
+need_value() { [[ $2 -ge 2 && -n "$3" ]] || die "Missing value for $1"; }
+
+while (($#)); do
+    case "$1" in
+        -n|--threads)   need_value "$1" $# "${2:-}"; THREAD_SPEC="$2"; shift 2 ;;
+        --threads=*)    THREAD_SPEC="${1#*=}"; shift ;;
+        -a|--all-cores) ALL_CORES=1; shift ;;
+        -t|--time)      need_value "$1" $# "${2:-}"; DURATION="$2"; shift 2 ;;
+        --time=*)       DURATION="${1#*=}"; shift ;;
+        -d|--disk-dir)  need_value "$1" $# "${2:-}"; DISK_DIR="$2"; shift 2 ;;
+        --disk-dir=*)   DISK_DIR="${1#*=}"; shift ;;
+        -s|--disk-size) need_value "$1" $# "${2:-}"; DISK_SIZE="$2"; shift 2 ;;
+        --disk-size=*)  DISK_SIZE="${1#*=}"; shift ;;
+        --direct)       DIRECT_IO=1; shift ;;
+        --buffered)     DIRECT_IO=0; shift ;;
+        -q|--quiet)     QUIET=1; shift ;;
+        -h|--help|help) show_help; exit 0 ;;
+        --)             shift; TESTS+=("$@"); break ;;
+        -*)             die "Unknown option: $1 (see --help)" ;;
+        *)              TESTS+=("$1"); shift ;;
+    esac
+done
+
+[[ "$DURATION" =~ ^[1-9][0-9]*$ ]] || die "Invalid duration: $DURATION"
+[[ "$DISK_CAP_GB" =~ ^[1-9][0-9]*$ ]] || die "Invalid SB_FILE_CAP: $DISK_CAP_GB"
+case "$DIRECT_IO" in auto|0|1) ;; *) die "Invalid SB_DIRECT: $DIRECT_IO (auto|1|0)" ;; esac
+((ALL_CORES)) && THREAD_SPEC+=",nproc"
+resolve_threads
+
+# ============================================================
+# MAIN
+# ============================================================
+
+((${#TESTS[@]})) || { show_help; exit 0; }
+
+SHOW_INFO=0
+SHOW_DEPS=0
+declare -A SEEN=()
+for test in "${TESTS[@]}"; do
+    case "$test" in
+        all)  set -- cpu memory threads mutex fileio ;;
+        info) SHOW_INFO=1; continue ;;
+        deps|check) SHOW_DEPS=1; continue ;;
+        cpu|memory|threads|mutex|fileio) set -- "$test" ;;
+        *)    die "Unknown test: $test (see --help)" ;;
+    esac
+    for t in "$@"; do
+        [[ -n "${SEEN[$t]:-}" ]] && continue
+        SEEN[$t]=1
+        SELECTED+=("$t")
+    done
+done
+
+# Dependency check comes first: verbose for "deps", silent-if-OK otherwise.
+if ((SHOW_DEPS)); then
+    check_dependencies 1
+elif ((${#SELECTED[@]})); then
+    check_dependencies 0
+fi
+
+((SHOW_INFO)) && show_info
+((${#SELECTED[@]})) || exit 0
+
+WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/linux-bench.XXXXXX") || die "Cannot create temporary directory"
+
+# Estimate total runtime.
+NT=${#THREADS[@]}
+RUNS=0
+for test in "${SELECTED[@]}"; do
+    case "$test" in
+        cpu|threads|mutex) RUNS=$((RUNS + NT)) ;;
+        memory)            RUNS=$((RUNS + 4 * NT)) ;;
+        fileio)            RUNS=$((RUNS + 2 + 3 * NT)) ;;
+    esac
+done
+
+header "LINUX BENCHMARK RUNNER v$VERSION"
+kv "Host" "$HOSTNAME_STR ($OS_NAME, $(uname -m))"
+kv "CPU" "$CPU_MODEL, $CPU_THREADS logical CPUs$( ((NUMA_NODES > 1)) && echo ", $NUMA_NODES NUMA nodes")"
+kv "Memory" "$(human_mb "$MEM_AVAILABLE_MB") available / $(human_mb "$MEM_TOTAL_MB")"
+kv "Sysbench" "$(sysbench --version 2>/dev/null)"
+kv "Tests" "${SELECTED[*]}"
+kv "Threads" "$(join_by , "${THREADS[@]}")"
+kv "Duration" "${DURATION}s x $RUNS runs (~$(human_secs $((DURATION * RUNS))))"
+
+for t in "${THREADS[@]}"; do
+    if ((t > CPU_THREADS)); then
+        warning "$t threads > $CPU_THREADS CPUs: multi-thread runs are oversubscribed."
+        break
+    fi
+done
+if ((NUMA_NODES > 1)); then
+    info "NUMA system: multi-threaded memory results may span nodes (use numactl to pin)."
+fi
+
+[[ "$QUIET" == "1" ]] && echo
+
+for test in "${SELECTED[@]}"; do
+    case "$test" in
+        cpu)     test_cpu ;;
+        memory)  test_memory ;;
+        threads) test_threads ;;
+        mutex)   test_mutex ;;
+        fileio)  test_fileio ;;
+    esac
+done
+
+show_summary
+
+exit $((FAILED > 0 ? 1 : 0))
