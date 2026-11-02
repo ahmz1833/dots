@@ -1,0 +1,1637 @@
+#!/usr/bin/env python3
+"""
+egress-check (v2.0) — Zero-Dependency Dual-Stack (IPv4 & IPv6) VM Egress & IP Reputation Vetter
+
+Improvements in v2.0 based on real-world multi-VPS telemetry:
+  1. Fast Bounded Connect Timeouts (No more 48s Yahoo / 36s iCloud Port 25 hangs when a host has multiple A records).
+  2. Multi-DB GeoIP Consistency & Broadcast Subnet Detection:
+     - Compares Country/Location across IPInfo, IP-API, ipapi.is, ipwho.is, and Cloudflare Trace (`loc` vs `colo`)
+       to catch leased/broadcast subnets (e.g. UAE IPv4 announced in Hong Kong, or UK IPv6 announced in Kansas).
+  3. Accurate Reputation & Fraud Scoring (Fixed False Positives):
+     - Fixed Ping0.cc parser (removed CSS `100%` false match).
+     - Strict Scamalytics `<pre>` JSON block extraction + IPv6 /64 range warning awareness.
+     - Added ProxyCheck.io keyless API (`risk` score 0-100, `proxy`, `type`) and SANS ISC DShield threat feed API.
+     - Cross-validates Proxy/VPN flags across 4 databases (IP-API, ipapi.is, ProxyCheck.io, Shodan) to avoid
+       penalizing normal VPS datacenter IPs when only 1 DB flags the ASN.
+  4. Smart IPv6 Service & MX Probing:
+     - Detects when a target service or MX server has no `AAAA` record (`[IPv4-ONLY]`) instead of falsely reporting
+       `[UNREACHABLE] Errno -5/-2`.
+     - Uses dual-stack Cloudflare trace (`www.cloudflare.com/cdn-cgi/trace`) instead of IPv4 literal `1.1.1.1`.
+  5. Granular AI / Social / Streaming Diagnostics:
+     - Distinguishes **Geo-Blocks** (e.g. OpenAI/Claude/Gemini blocked in HK/AE) from **IP/WAF Blocks** (Captcha/403).
+     - Probes both `ChatGPT Web` (actual homepage WAF check, not just `/cdn-cgi/trace`) and `OpenAI API`.
+     - Inspects Google Gemini API error payloads to distinguish Geo-Block (`User location is not supported`) from IP block.
+  6. Separate Mail Readiness Grade vs. IP Cleanliness Score:
+     - Reports both an **IP Cleanliness Score (0-100)** and a dedicated **Mail Egress Verdict** (`READY`, `NEEDS-PTR`,
+       `PORT25-BLOCKED`, `BLACKLISTED`) so hypervisor Port 25 blocks don't falsely mark a clean VPS IP as `[DIRTY]`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import http.client
+import ipaddress
+import json
+import os
+import random
+import re
+import socket
+import ssl
+import struct
+import sys
+import time
+import urllib.parse
+from dataclasses import dataclass, field, asdict
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+
+# ==============================================================================
+# Terminal Styling & Formatting
+# ==============================================================================
+
+class Style:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+
+    @classmethod
+    def disable(cls) -> None:
+        for attr in ("RESET", "BOLD", "DIM", "RED", "GREEN", "YELLOW", "BLUE", "MAGENTA", "CYAN", "WHITE"):
+            setattr(cls, attr, "")
+
+
+if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+    Style.disable()
+
+
+def badge(status: str) -> str:
+    s = status.upper()
+    if s in ("CLEAN", "PASS", "OK", "OPEN", "200", "220/250", "LOW", "NO", "READY", "CONSISTENT"):
+        return f"{Style.GREEN}{Style.BOLD}[{status}]{Style.RESET}"
+    if s in (
+        "WARN", "CHALLENGE", "RATE-LIMITED", "DATACENTER", "GENERIC-PTR", "MEDIUM",
+        "429", "YES", "GEO-BLOCKED", "NEEDS-PTR", "PORT25-BLOCKED", "MISMATCH", "1/4 DBS",
+    ):
+        return f"{Style.YELLOW}{Style.BOLD}[{status}]{Style.RESET}"
+    if s in ("DIRTY", "FAIL", "BLOCKED", "LISTED", "CAPTCHA", "HIGH", "VERY HIGH", "403", "550", "BLACKLISTED"):
+        return f"{Style.RED}{Style.BOLD}[{status}]{Style.RESET}"
+    if s in ("IPV4-ONLY", "NO-AAAA", "SKIPPED", "UNAVAILABLE"):
+        return f"{Style.DIM}[{status}]{Style.RESET}"
+    return f"{Style.CYAN}[{status}]{Style.RESET}"
+
+
+# ==============================================================================
+# Dual-Stack Socket & HTTP/HTTPS Client (Bounded Total Timeout)
+# ==============================================================================
+
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+class NoAAAARecordError(OSError):
+    """Raised when AF_INET6 is requested for a domain that only publishes IPv4 (A) records."""
+
+
+def host_has_ipv4_only(host: str) -> bool:
+    """Return True if `host` resolves under IPv4 (AF_INET) but has no IPv6 (AF_INET6) records."""
+    try:
+        v4 = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+        return bool(v4)
+    except Exception:
+        return False
+
+
+def create_family_socket(
+    host: str,
+    port: int,
+    family: socket.AddressFamily,
+    timeout: float = 5.0,
+    max_addrs: int = 2,
+) -> socket.socket:
+    """
+    Resolve `host` strictly under `family` (AF_INET or AF_INET6) and connect.
+    Caps address attempts and enforces `timeout` as a total budget so multi-A-record
+    hosts (like Yahoo/iCloud MX) never multiply timeouts when a port is firewall-dropped.
+    """
+    deadline = time.monotonic() + timeout
+    try:
+        infos = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        if family == socket.AF_INET6 and host_has_ipv4_only(host):
+            raise NoAAAARecordError(f"Target {host} is IPv4-only (no AAAA record)") from e
+        raise
+
+    if not infos:
+        if family == socket.AF_INET6 and host_has_ipv4_only(host):
+            raise NoAAAARecordError(f"Target {host} is IPv4-only (no AAAA record)")
+        raise OSError(f"No {family.name} record for {host}")
+
+    candidates = infos[:max_addrs]
+    last_err: Optional[Exception] = None
+    for idx, (af, socktype, proto, _, sockaddr) in enumerate(candidates):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.1:
+            break
+        # Split timeout budget across up to 2 addresses if the first times out
+        per_attempt = remaining if idx == len(candidates) - 1 else max(1.5, remaining * 0.65)
+        sock: Optional[socket.socket] = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            sock.settimeout(per_attempt)
+            sock.connect(sockaddr)
+            sock.settimeout(timeout)
+            return sock
+        except Exception as e:
+            last_err = e
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+    raise last_err or TimeoutError("timed out")
+
+
+class FamilyHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host: str, port: Optional[int] = None, timeout: float = 5.0,
+                 family: socket.AddressFamily = socket.AF_INET):
+        super().__init__(host, port=port, timeout=timeout)
+        self.family = family
+
+    def connect(self) -> None:
+        self.sock = create_family_socket(self.host, self.port or 80, self.family, self.timeout)
+
+
+class FamilyHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host: str, port: Optional[int] = None, timeout: float = 5.0,
+                 family: socket.AddressFamily = socket.AF_INET,
+                 context: Optional[ssl.SSLContext] = None):
+        if context is None:
+            context = ssl.create_default_context()
+        super().__init__(host, port=port, timeout=timeout, context=context)
+        self.family = family
+
+    def connect(self) -> None:
+        raw_sock = create_family_socket(self.host, self.port or 443, self.family, self.timeout)
+        self.sock = self._context.wrap_socket(raw_sock, server_hostname=self.host)
+
+
+@dataclass
+class HTTPResponseData:
+    status: int
+    headers: Dict[str, str]
+    body: str
+    url: str
+    elapsed_ms: float
+    error: Optional[str] = None
+    ipv4_only_target: bool = False
+
+
+def http_request(
+    url: str,
+    family: socket.AddressFamily,
+    method: str = "GET",
+    headers: Optional[Dict[str, str]] = None,
+    body_bytes: Optional[bytes] = None,
+    timeout: float = 5.5,
+    max_redirects: int = 2,
+    max_bytes: int = 65536,
+) -> HTTPResponseData:
+    """Perform an HTTP/HTTPS request strictly forced over IPv4 (AF_INET) or IPv6 (AF_INET6)."""
+    req_headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "close",
+    }
+    if headers:
+        req_headers.update(headers)
+
+    current_url = url
+    start = time.monotonic()
+
+    for _ in range(max_redirects + 1):
+        parsed = urllib.parse.urlsplit(current_url)
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname
+        if not host:
+            return HTTPResponseData(0, {}, "", current_url, 0.0, "Invalid URL host")
+        port = parsed.port or (443 if scheme == "https" else 80)
+        path = parsed.path or "/"
+        if parsed.query:
+            path += "?" + parsed.query
+
+        conn: Optional[http.client.HTTPConnection] = None
+        try:
+            if scheme == "https":
+                conn = FamilyHTTPSConnection(host, port=port, timeout=timeout, family=family)
+            else:
+                conn = FamilyHTTPConnection(host, port=port, timeout=timeout, family=family)
+
+            conn.request(method, path, body=body_bytes, headers=req_headers)
+            resp = conn.getresponse()
+            resp_headers = {k.lower(): v for k, v in resp.getheaders()}
+            raw_body = resp.read(max_bytes)
+            body_text = raw_body.decode("utf-8", errors="replace")
+            elapsed = round((time.monotonic() - start) * 1000.0, 1)
+
+            if resp.status in (301, 302, 303, 307, 308) and "location" in resp_headers:
+                loc = resp_headers["location"]
+                current_url = urllib.parse.urljoin(current_url, loc)
+                method = "GET"
+                body_bytes = None
+                continue
+
+            return HTTPResponseData(
+                status=resp.status,
+                headers=resp_headers,
+                body=body_text,
+                url=current_url,
+                elapsed_ms=elapsed,
+            )
+        except NoAAAARecordError as e:
+            elapsed = round((time.monotonic() - start) * 1000.0, 1)
+            return HTTPResponseData(0, {}, "", current_url, elapsed, str(e), ipv4_only_target=True)
+        except Exception as e:
+            elapsed = round((time.monotonic() - start) * 1000.0, 1)
+            return HTTPResponseData(0, {}, "", current_url, elapsed, str(e))
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    elapsed = round((time.monotonic() - start) * 1000.0, 1)
+    return HTTPResponseData(310, {}, "", current_url, elapsed, "Too many redirects")
+
+
+# ==============================================================================
+# Pure-Python Raw UDP DNS Client (For DNSBLs, PTR, MX, TXT/SPF/DMARC)
+# ==============================================================================
+
+def _encode_dns_name(domain: str) -> bytes:
+    parts = domain.strip(".").split(".")
+    return b"".join(struct.pack("B", len(p)) + p.encode("ascii") for p in parts if p) + b"\x00"
+
+
+def _decode_dns_name(packet: bytes, offset: int) -> Tuple[str, int]:
+    labels: List[str] = []
+    jumped = False
+    orig_offset = offset
+    hops = 0
+    while True:
+        hops += 1
+        if hops > 64 or offset >= len(packet):
+            break
+        length = packet[offset]
+        if length == 0:
+            offset += 1
+            break
+        if (length & 0xC0) == 0xC0:
+            if not jumped:
+                orig_offset = offset + 2
+                jumped = True
+            pointer = ((length & 0x3F) << 8) | packet[offset + 1]
+            offset = pointer
+            continue
+        offset += 1
+        labels.append(packet[offset:offset + length].decode("ascii", errors="replace"))
+        offset += length
+    return ".".join(labels), (orig_offset if jumped else offset)
+
+
+def dns_query(
+    qname: str,
+    qtype: int = 1,  # 1=A, 28=AAAA, 12=PTR, 15=MX, 16=TXT
+    resolvers: Tuple[str, ...] = ("1.1.1.1", "8.8.8.8", "9.9.9.9"),
+    timeout: float = 2.0,
+) -> List[str]:
+    """Send a standard DNS UDP query to public resolvers and parse answers."""
+    tid = random.randint(1, 65534)
+    header = struct.pack("!HHHHHH", tid, 0x0100, 1, 0, 0, 0)
+    question = _encode_dns_name(qname) + struct.pack("!HH", qtype, 1)
+    packet = header + question
+
+    for resolver in resolvers:
+        sock: Optional[socket.socket] = None
+        try:
+            af = socket.AF_INET6 if ":" in resolver else socket.AF_INET
+            sock = socket.socket(af, socket.SOCK_DGRAM)
+            sock.settimeout(timeout)
+            sock.sendto(packet, (resolver, 53))
+            data, _ = sock.recvfrom(2048)
+            if len(data) < 12:
+                continue
+            r_tid, flags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", data[:12])
+            if r_tid != tid:
+                continue
+            rcode = flags & 0x000F
+            if rcode == 3:  # NXDOMAIN
+                return []
+            if rcode != 0 or ancount == 0:
+                continue
+
+            offset = 12
+            for _ in range(qdcount):
+                _, offset = _decode_dns_name(data, offset)
+                offset += 4
+
+            answers: List[str] = []
+            for _ in range(ancount):
+                _, offset = _decode_dns_name(data, offset)
+                if offset + 10 > len(data):
+                    break
+                rtype, _rclass, _ttl, rdlength = struct.unpack("!HHIH", data[offset:offset + 10])
+                offset += 10
+                rdata = data[offset:offset + rdlength]
+                if rtype == 1 and rdlength == 4:  # A
+                    answers.append(socket.inet_ntop(socket.AF_INET, rdata))
+                elif rtype == 28 and rdlength == 16:  # AAAA
+                    answers.append(socket.inet_ntop(socket.AF_INET6, rdata))
+                elif rtype == 12:  # PTR
+                    ptr_name, _ = _decode_dns_name(data, offset)
+                    answers.append(ptr_name)
+                elif rtype == 15 and rdlength >= 3:  # MX
+                    pref = struct.unpack("!H", rdata[:2])[0]
+                    mx_host, _ = _decode_dns_name(data, offset + 2)
+                    answers.append(f"{pref} {mx_host}")
+                elif rtype == 16:  # TXT
+                    idx = 0
+                    txt_parts: List[str] = []
+                    while idx < len(rdata):
+                        tlen = rdata[idx]
+                        idx += 1
+                        txt_parts.append(rdata[idx:idx + tlen].decode("utf-8", errors="replace"))
+                        idx += tlen
+                    answers.append("".join(txt_parts))
+                offset += rdlength
+            return answers
+        except Exception:
+            continue
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+    return []
+
+
+def reverse_ip_for_dnsbl(ip: str) -> str:
+    ip_obj = ipaddress.ip_address(ip)
+    rev_ptr = ip_obj.reverse_pointer
+    for suffix in (".in-addr.arpa", ".ip6.arpa"):
+        if rev_ptr.endswith(suffix):
+            return rev_ptr[:-len(suffix)]
+    return rev_ptr
+
+
+# ==============================================================================
+# Phase 1: Egress Identity, Multi-DB GeoIP Consistency & Reverse DNS
+# ==============================================================================
+
+GENERIC_PTR_PATTERNS = [
+    r"amazonaws\.com$",
+    r"googleusercontent\.com$",
+    r"bc\.googleusercontent\.com$",
+    r"vultrusercontent\.com$",
+    r"choopa\.net$",
+    r"digitalocean\.com$",
+    r"hetzner\.(com|de)$",
+    r"your-server\.de$",
+    r"clients\.your-server\.de$",
+    r"contaboserver\.net$",
+    r"ovh\.(net|ca|us)$",
+    r"linodeusercontent\.com$",
+    r"members\.linode\.com$",
+    r"akamaitechnologies\.com$",
+    r"cloud\.oracle\.com$",
+    r"scaleway\.com$",
+    r"upcloud\.host$",
+    r"kamatera\.com$",
+    r"hostinger\.com$",
+    r"static\.",
+    r"dynamic\.",
+    r"dsl\.",
+    r"pool\.",
+    r"unassigned",
+    r"\d{1,3}[-\.]\d{1,3}[-\.]\d{1,3}[-\.]\d{1,3}",
+]
+
+
+@dataclass
+class IdentityInfo:
+    stack: str
+    ip: Optional[str] = None
+    asn: str = "Unknown"
+    org: str = "Unknown"
+    isp: str = "Unknown"
+    country: str = "Unknown"
+    region: str = "Unknown"
+    city: str = "Unknown"
+    geo_sources: Dict[str, str] = field(default_factory=dict)  # DB -> CountryCode
+    geo_consistent: bool = True
+    ptr_record: Optional[str] = None
+    fcrdns_valid: bool = False
+    generic_ptr: bool = False
+    is_hosting: bool = False
+    proxy_detections: List[str] = field(default_factory=list)  # Which DBs flagged proxy/VPN
+    is_tor: bool = False
+    is_abuser: bool = False
+    abuser_score: str = "Unknown"
+    cf_colo: str = "Unknown"
+    cf_loc: str = "Unknown"
+    cf_tls: str = "Unknown"
+
+
+def discover_egress_ip(family: socket.AddressFamily, timeout: float = 4.5) -> Tuple[Optional[str], str, str, str]:
+    """Discover the public egress IP and Cloudflare trace metadata (`colo`, `loc`, `tls`)."""
+    cf_urls = [
+        "https://www.cloudflare.com/cdn-cgi/trace",
+        "https://1.1.1.1/cdn-cgi/trace" if family == socket.AF_INET else "https://[2606:4700:4700::1111]/cdn-cgi/trace",
+    ]
+    for url in cf_urls:
+        resp = http_request(url, family=family, timeout=timeout)
+        if resp.status == 200 and "ip=" in resp.body:
+            kv = dict(line.split("=", 1) for line in resp.body.splitlines() if "=" in line)
+            ip_val = kv.get("ip", "").strip()
+            if ip_val:
+                return (
+                    ip_val,
+                    kv.get("colo", "Unknown"),
+                    kv.get("loc", "Unknown"),
+                    kv.get("tls", "Unknown"),
+                )
+
+    fallback_urls = [
+        "https://api64.ipify.org",
+        "https://icanhazip.com",
+        "https://ident.me",
+    ]
+    for url in fallback_urls:
+        resp = http_request(url, family=family, timeout=timeout)
+        if resp.status == 200:
+            candidate = resp.body.strip()
+            try:
+                ipaddress.ip_address(candidate)
+                return candidate, "Unknown", "Unknown", "Unknown"
+            except ValueError:
+                continue
+
+    return None, "Unknown", "Unknown", "Unknown"
+
+
+def check_identity_and_rdns(family: socket.AddressFamily, timeout: float = 5.5) -> IdentityInfo:
+    stack_name = "IPv4" if family == socket.AF_INET else "IPv6"
+    info = IdentityInfo(stack=stack_name)
+
+    ip, colo, cf_loc, tls = discover_egress_ip(family, timeout=timeout)
+    if not ip:
+        return info
+
+    info.ip = ip
+    info.cf_colo = colo
+    info.cf_loc = cf_loc
+    info.cf_tls = tls
+    if cf_loc and cf_loc != "Unknown":
+        info.geo_sources["Cloudflare"] = cf_loc
+
+    # 1. Reverse DNS (PTR) & Forward-Confirmed rDNS (FCrDNS)
+    ptr_hostname: Optional[str] = None
+    try:
+        ptr_hostname = socket.gethostbyaddr(ip)[0]
+    except Exception:
+        try:
+            rev_name = ipaddress.ip_address(ip).reverse_pointer
+            ptrs = dns_query(rev_name, qtype=12, timeout=2.0)
+            if ptrs:
+                ptr_hostname = ptrs[0]
+        except Exception:
+            pass
+
+    if ptr_hostname:
+        info.ptr_record = ptr_hostname
+        try:
+            addr_infos = socket.getaddrinfo(ptr_hostname, None, family, socket.SOCK_STREAM)
+            forward_ips = {ai[4][0] for ai in addr_infos}
+            normalized_ip = ipaddress.ip_address(ip)
+            info.fcrdns_valid = any(ipaddress.ip_address(fip) == normalized_ip for fip in forward_ips)
+        except Exception:
+            info.fcrdns_valid = False
+
+        lower_ptr = ptr_hostname.lower()
+        info.generic_ptr = any(re.search(pat, lower_ptr) for pat in GENERIC_PTR_PATTERNS)
+
+    # 2. Query 4 GeoIP & ASN Metadata DBs concurrently (IP-API, ipapi.is, IPInfo, ipwho.is)
+    ipapi_url = (
+        f"http://ip-api.com/json/{ip}"
+        "?fields=status,country,countryCode,regionName,city,isp,org,as,reverse,mobile,proxy,hosting"
+    )
+    ipapi_is_url = f"https://api.ipapi.is/?q={ip}"
+    ipinfo_url = f"https://ipinfo.io/{ip}/json"
+    ipwhois_url = f"https://ipwho.is/{ip}"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        f_ipapi = pool.submit(http_request, ipapi_url, socket.AF_INET, "GET", None, None, timeout)
+        f_is = pool.submit(http_request, ipapi_is_url, socket.AF_INET, "GET", None, None, timeout)
+        f_info = pool.submit(http_request, ipinfo_url, socket.AF_INET, "GET", None, None, timeout)
+        f_who = pool.submit(http_request, ipwhois_url, socket.AF_INET, "GET", None, None, timeout)
+
+        resp_ipapi = f_ipapi.result()
+        resp_is = f_is.result()
+        resp_info = f_info.result()
+        resp_who = f_who.result()
+
+    # Parse ip-api.com
+    if resp_ipapi.status == 200:
+        try:
+            data = json.loads(resp_ipapi.body)
+            if data.get("status") == "success":
+                info.asn = data.get("as") or info.asn
+                info.org = data.get("org") or info.org
+                info.isp = data.get("isp") or info.isp
+                cc = data.get("countryCode", "")
+                if cc:
+                    info.geo_sources["IP-API"] = cc
+                info.country = f"{data.get('country', 'Unknown')} ({cc})".strip()
+                info.region = data.get("regionName") or info.region
+                info.city = data.get("city") or info.city
+                info.is_hosting = bool(data.get("hosting", False))
+                if data.get("proxy"):
+                    info.proxy_detections.append("IP-API")
+                if not info.ptr_record and data.get("reverse"):
+                    info.ptr_record = data["reverse"]
+        except Exception:
+            pass
+
+    # Parse ipinfo.io
+    if resp_info.status == 200:
+        try:
+            idata = json.loads(resp_info.body)
+            cc = idata.get("country", "")
+            if cc:
+                info.geo_sources["IPInfo"] = cc
+            if info.org == "Unknown" and idata.get("org"):
+                info.org = idata["org"]
+            if info.asn == "Unknown" and idata.get("org"):
+                info.asn = idata["org"]
+            if not info.ptr_record and idata.get("hostname"):
+                info.ptr_record = idata["hostname"]
+        except Exception:
+            pass
+
+    # Parse ipwho.is
+    if resp_who.status == 200:
+        try:
+            wdata = json.loads(resp_who.body)
+            if wdata.get("success"):
+                cc = wdata.get("country_code", "")
+                if cc:
+                    info.geo_sources["IPWhois"] = cc
+                conn_sec = wdata.get("connection") or {}
+                if info.org in ("Unknown", "") and conn_sec.get("org"):
+                    info.org = conn_sec["org"]
+                if info.asn == "Unknown" and conn_sec.get("asn"):
+                    info.asn = f"AS{conn_sec['asn']} {conn_sec.get('isp', '')}".strip()
+        except Exception:
+            pass
+
+    # Parse ipapi.is
+    if resp_is.status == 200:
+        try:
+            is_data = json.loads(resp_is.body)
+            loc_sec = is_data.get("location") or {}
+            cc = loc_sec.get("country_code", "")
+            if cc:
+                info.geo_sources["ipapi.is"] = cc
+            info.is_hosting = info.is_hosting or bool(is_data.get("is_datacenter", False))
+            if is_data.get("is_vpn") or is_data.get("is_proxy"):
+                info.proxy_detections.append("ipapi.is")
+            info.is_tor = bool(is_data.get("is_tor", False))
+            info.is_abuser = bool(is_data.get("is_abuser", False))
+            comp = is_data.get("company") or {}
+            asn_sec = is_data.get("asn") or {}
+            ab_score = comp.get("abuser_score") or asn_sec.get("abuser_score")
+            if ab_score:
+                info.abuser_score = str(ab_score)
+            if info.org in ("Unknown", "") and comp.get("name"):
+                info.org = comp["name"]
+        except Exception:
+            pass
+
+    # Evaluate GeoIP Consistency across queried databases
+    unique_countries = {c.upper() for c in info.geo_sources.values() if c and c != "XX"}
+    info.geo_consistent = len(unique_countries) <= 1
+
+    return info
+
+
+# ==============================================================================
+# Phase 2: Free Online Reputation DBs, Fraud Scores & DNSBLs
+# ==============================================================================
+
+DNSBL_PROVIDERS_V4: List[Tuple[str, str]] = [
+    ("zen.spamhaus.org", "Spamhaus ZEN (SBL/XBL/PBL)"),
+    ("bl.spamcop.net", "SpamCop Blocking List"),
+    ("b.barracudacentral.org", "Barracuda Reputation Block List"),
+    ("dnsbl.sorbs.net", "SORBS Aggregate Zone"),
+    ("psbl.surriel.com", "Passive Spam Block List (PSBL)"),
+    ("bl.blocklist.de", "Blocklist.de SSH/Mail/Bruteforce"),
+    ("dnsbl.dronebl.org", "DroneBL Abusive IPs / Botnets"),
+    ("dnsbl-1.uceprotect.net", "UCEPROTECT Level 1"),
+    ("bl.mailspike.net", "Mailspike Blacklist"),
+    ("db.wpbl.info", "Weighted Private Block List (WPBL)"),
+    ("ix.dnsbl.manitu.net", "NiX Spam DNSBL (Heise)"),
+    ("all.s5h.net", "S5H All-Abuse RBL"),
+    ("rbl.interserver.net", "InterServer Mail RBL"),
+    ("bl.0spam.org", "0Spam Project Main List"),
+]
+
+DNSBL_PROVIDERS_V6: List[Tuple[str, str]] = [
+    ("zen.spamhaus.org", "Spamhaus ZEN IPv6"),
+    ("bl.blocklist.de", "Blocklist.de IPv6"),
+    ("dnsbl.dronebl.org", "DroneBL IPv6"),
+    ("all.s5h.net", "S5H All-Abuse IPv6"),
+    ("bl.0spam.org", "0Spam Project IPv6"),
+    ("v6.fullbogons.cymru.com", "Team Cymru IPv6 Fullbogons"),
+]
+
+
+@dataclass
+class ReputationResult:
+    sender_score: Optional[int] = None        # Validity SenderScore 0-100 via DNS
+    mailspike_rep: str = "Unknown"            # Mailspike reputation via DNS
+    scamalytics_score: Optional[int] = None   # 0-100
+    scamalytics_risk: str = "Unknown"
+    proxycheck_risk: Optional[int] = None     # ProxyCheck.io 0-100 risk score
+    proxycheck_type: str = "Unknown"
+    proxycheck_proxy: bool = False
+    dshield_attacks: int = 0                  # SANS ISC DShield attack reports
+    dshield_reports: int = 0
+    stopforumspam_appears: bool = False
+    stopforumspam_frequency: int = 0
+    shodan_open_ports: List[int] = field(default_factory=list)
+    shodan_vulns: List[str] = field(default_factory=list)
+    shodan_tags: List[str] = field(default_factory=list)
+    dnsbl_total_checked: int = 0
+    dnsbl_listed: List[Dict[str, str]] = field(default_factory=list)
+    dnsbl_clean_count: int = 0
+
+
+def query_single_dnsbl(ip: str, zone: str, label: str) -> Tuple[str, str, Optional[str]]:
+    """Query a single DNSBL zone for an IPv4 or IPv6 address."""
+    try:
+        rev_ip = reverse_ip_for_dnsbl(ip)
+        qname = f"{rev_ip}.{zone}"
+        answers = dns_query(qname, qtype=1, timeout=2.0)
+        if not answers:
+            try:
+                ans = socket.gethostbyname(qname)
+                if ans:
+                    answers = [ans]
+            except Exception:
+                pass
+
+        # Filter out Spamhaus / DNSBL public resolver policy return codes (127.255.255.252 - 127.255.255.255)
+        valid_codes = [
+            a for a in answers
+            if a.startswith("127.0.") and not a.startswith("127.255.")
+        ]
+        if valid_codes:
+            return zone, label, ",".join(valid_codes)
+    except Exception:
+        pass
+    return zone, label, None
+
+
+def query_dns_reputation_scores(ip: str, family: socket.AddressFamily) -> Tuple[Optional[int], str]:
+    """Query Validity SenderScore (0-100) and Mailspike Reputation over DNS (free, keyless)."""
+    if family != socket.AF_INET:
+        return None, "N/A (IPv4 only)"
+
+    rev_ip = reverse_ip_for_dnsbl(ip)
+    sender_score: Optional[int] = None
+    mailspike_rating = "Unrated (Neutral)"
+
+    ss_ans = dns_query(f"{rev_ip}.score.senderscore.com", qtype=1, timeout=2.0)
+    for ans in ss_ans:
+        if ans.startswith("127.0.4."):
+            try:
+                sender_score = int(ans.split(".")[-1])
+            except ValueError:
+                pass
+
+    ms_ans = dns_query(f"{rev_ip}.rep.mailspike.net", qtype=1, timeout=2.0)
+    ms_map = {
+        "127.0.0.10": "L5 (Worst Spammer)",
+        "127.0.0.11": "L4 (Very Bad Reputation)",
+        "127.0.0.12": "L3 (Bad Reputation)",
+        "127.0.0.13": "L2 (Suspicious)",
+        "127.0.0.14": "L1 (Slightly Suspicious)",
+        "127.0.0.15": "Neutral",
+        "127.0.0.16": "H1 (Good)",
+        "127.0.0.17": "H2 (Very Good)",
+        "127.0.0.18": "H3 (Excellent)",
+        "127.0.0.19": "H4 (Highly Trusted)",
+        "127.0.0.20": "H5 (Highest Reputation)",
+    }
+    for ans in ms_ans:
+        if ans in ms_map:
+            mailspike_rating = ms_map[ans]
+            break
+
+    return sender_score, mailspike_rating
+
+
+def parse_scamalytics_html(html_body: str) -> Tuple[Optional[int], str]:
+    """Extract Scamalytics Fraud Score strictly from its embedded `<pre>` JSON or score callout."""
+    # First look for the exact `<pre>...</pre>` JSON block on Scamalytics IP pages
+    m_pre = re.search(r"<pre[^>]*>\s*(\{.*?\})\s*</pre>", html_body, re.DOTALL | re.IGNORECASE)
+    if m_pre:
+        try:
+            jdata = json.loads(m_pre.group(1))
+            score_val = int(jdata.get("score"))
+            risk_val = str(jdata.get("risk", "")).strip().title()
+            return score_val, (risk_val or "Unknown")
+        except Exception:
+            pass
+
+    # Fallback: match `Fraud Score: 12` inside `.score` div
+    m_div = re.search(r'class=["\']score["\'][^>]*>\s*Fraud Score:\s*(\d+)', html_body, re.IGNORECASE)
+    if m_div:
+        s = int(m_div.group(1))
+        r = "Low" if s < 25 else ("Medium" if s < 60 else ("High" if s < 85 else "Very High"))
+        return s, r
+
+    return None, "Unknown"
+
+
+def check_online_reputation(
+    ip: str,
+    family: socket.AddressFamily,
+    identity: IdentityInfo,
+    timeout: float = 5.5,
+) -> ReputationResult:
+    res = ReputationResult()
+
+    # Run DNS reputation + HTTP reputation queries in parallel
+    scam_url = f"https://scamalytics.com/ip/{ip}"
+    pcheck_url = f"https://proxycheck.io/v2/{ip}?vpn=1&asn=1&risk=1"
+    sfs_url = f"https://api.stopforumspam.org/api?ip={urllib.parse.quote(ip)}&json"
+    shodan_url = f"https://internetdb.shodan.io/{ip}"
+    dshield_url = f"https://isc.sans.edu/api/ip/{ip}?json"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        f_dns_rep = pool.submit(query_dns_reputation_scores, ip, family)
+        f_scam = pool.submit(http_request, scam_url, socket.AF_INET, "GET", None, None, timeout)
+        f_pcheck = pool.submit(http_request, pcheck_url, socket.AF_INET, "GET", None, None, timeout)
+        f_sfs = pool.submit(http_request, sfs_url, socket.AF_INET, "GET", None, None, timeout)
+        f_shodan = pool.submit(http_request, shodan_url, socket.AF_INET, "GET", None, None, timeout)
+        f_dshield = pool.submit(http_request, dshield_url, socket.AF_INET, "GET", None, None, timeout)
+
+        res.sender_score, res.mailspike_rep = f_dns_rep.result()
+        resp_scam = f_scam.result()
+        resp_pcheck = f_pcheck.result()
+        resp_sfs = f_sfs.result()
+        resp_shodan = f_shodan.result()
+        resp_dshield = f_dshield.result()
+
+    # 1. Scamalytics
+    if resp_scam.status == 200:
+        res.scamalytics_score, res.scamalytics_risk = parse_scamalytics_html(resp_scam.body)
+
+    # 2. ProxyCheck.io (Free keyless JSON API: risk 0-100, proxy yes/no, type)
+    if resp_pcheck.status == 200:
+        try:
+            pdata = json.loads(resp_pcheck.body)
+            ip_node = pdata.get(ip) or {}
+            if ip_node:
+                if "risk" in ip_node:
+                    res.proxycheck_risk = int(ip_node["risk"])
+                res.proxycheck_type = str(ip_node.get("type", "Unknown"))
+                res.proxycheck_proxy = str(ip_node.get("proxy", "no")).lower() == "yes"
+                if res.proxycheck_proxy:
+                    identity.proxy_detections.append("ProxyCheck.io")
+        except Exception:
+            pass
+
+    # 3. StopForumSpam
+    if resp_sfs.status == 200:
+        try:
+            sfs_data = json.loads(resp_sfs.body)
+            ip_sec = sfs_data.get("ip") or {}
+            res.stopforumspam_appears = bool(ip_sec.get("appears", 0))
+            res.stopforumspam_frequency = int(ip_sec.get("frequency", 0))
+        except Exception:
+            pass
+
+    # 4. Shodan InternetDB
+    if resp_shodan.status == 200:
+        try:
+            s_data = json.loads(resp_shodan.body)
+            res.shodan_open_ports = s_data.get("ports") or []
+            res.shodan_vulns = s_data.get("vulns") or []
+            res.shodan_tags = s_data.get("tags") or []
+            if any(t in ("vpn", "proxy", "tor") for t in res.shodan_tags):
+                identity.proxy_detections.append("Shodan")
+        except Exception:
+            pass
+
+    # 5. SANS ISC DShield Threat Feed
+    if resp_dshield.status == 200:
+        try:
+            d_data = json.loads(resp_dshield.body).get("ip") or {}
+            res.dshield_reports = int(d_data.get("count") or 0)
+            res.dshield_attacks = int(d_data.get("attacks") or 0)
+        except Exception:
+            pass
+
+    # 6. Concurrent DNSBL Checks
+    providers = DNSBL_PROVIDERS_V4 if family == socket.AF_INET else DNSBL_PROVIDERS_V6
+    res.dnsbl_total_checked = len(providers)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(providers)) as pool:
+        futures = [pool.submit(query_single_dnsbl, ip, z, lbl) for z, lbl in providers]
+        for fut in concurrent.futures.as_completed(futures):
+            zone, label, code = fut.result()
+            if code:
+                res.dnsbl_listed.append({"zone": zone, "name": label, "return_code": code})
+            else:
+                res.dnsbl_clean_count += 1
+
+    return res
+
+
+# ==============================================================================
+# Phase 3: Full Mail Egress & Live MX Server SMTP Handshake Vetting
+# ==============================================================================
+
+MX_TEST_TARGETS: List[Tuple[str, str]] = [
+    ("Gmail (Google)", "gmail-smtp-in.l.google.com"),
+    ("Microsoft 365 / Outlook", "outlook-com.olc.protection.outlook.com"),
+    ("Yahoo Mail", "mta5.am0.yahoodns.net"),
+    ("ProtonMail", "mail.protonmail.ch"),
+    ("iCloud Mail (Apple)", "mx01.mail.icloud.com"),
+]
+
+
+@dataclass
+class MXHandshakeResult:
+    provider: str
+    mx_host: str
+    status: str  # CLEAN, BLOCKED, PORT25-BLOCKED, NO-AAAA, WARN
+    code: str
+    banner: str
+    elapsed_ms: float
+
+
+@dataclass
+class MailEgressReport:
+    mail_readiness: str = "PORT25-BLOCKED"  # READY, NEEDS-PTR, PORT25-BLOCKED, BLACKLISTED
+    port_25_open: bool = False
+    port_465_open: bool = False
+    port_587_open: bool = False
+    ptr_status: str = "MISSING"
+    fcrdns_status: str = "FAIL"
+    mx_handshakes: List[MXHandshakeResult] = field(default_factory=list)
+    domain_check: Optional[Dict[str, Any]] = None
+
+
+def probe_tcp_port(host: str, port: int, family: socket.AddressFamily, timeout: float = 3.5) -> bool:
+    sock: Optional[socket.socket] = None
+    try:
+        sock = create_family_socket(host, port, family, timeout=timeout, max_addrs=1)
+        return True
+    except Exception:
+        return False
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+def smtp_banner_and_ehlo_probe(
+    provider: str,
+    mx_host: str,
+    family: socket.AddressFamily,
+    ehlo_name: str = "vetter.local",
+    timeout: float = 4.0,
+) -> MXHandshakeResult:
+    """Connect to MX server on port 25 (capped at 1 IP & 4.0s total budget), read 220 banner, send EHLO."""
+    start = time.monotonic()
+    sock: Optional[socket.socket] = None
+    try:
+        sock = create_family_socket(mx_host, 25, family, timeout=timeout, max_addrs=1)
+        banner_bytes = sock.recv(1024)
+        banner = banner_bytes.decode("utf-8", errors="replace").strip()
+        elapsed = round((time.monotonic() - start) * 1000.0, 1)
+
+        code = banner[:3] if len(banner) >= 3 else "000"
+        lower_b = banner.lower()
+
+        if code.startswith(("4", "5")) or any(
+            w in lower_b for w in ("spamhaus", "blacklisted", "blocked", "denied", "poor reputation")
+        ):
+            try:
+                sock.sendall(b"QUIT\r\n")
+            except Exception:
+                pass
+            return MXHandshakeResult(
+                provider=provider,
+                mx_host=mx_host,
+                status="BLOCKED",
+                code=code,
+                banner=" ".join(banner.splitlines())[:110],
+                elapsed_ms=elapsed,
+            )
+
+        sock.sendall(f"EHLO {ehlo_name}\r\n".encode("ascii", errors="ignore"))
+        ehlo_resp = sock.recv(1024).decode("utf-8", errors="replace").strip()
+        ehlo_code = ehlo_resp[:3] if len(ehlo_resp) >= 3 else code
+        try:
+            sock.sendall(b"QUIT\r\n")
+        except Exception:
+            pass
+
+        if ehlo_code.startswith("2"):
+            return MXHandshakeResult(
+                provider=provider,
+                mx_host=mx_host,
+                status="CLEAN",
+                code="220/250",
+                banner=" ".join(banner.splitlines())[:95],
+                elapsed_ms=elapsed,
+            )
+        return MXHandshakeResult(
+            provider=provider,
+            mx_host=mx_host,
+            status="WARN",
+            code=f"{code}/{ehlo_code}",
+            banner=" ".join(ehlo_resp.splitlines())[:95],
+            elapsed_ms=elapsed,
+        )
+    except NoAAAARecordError:
+        elapsed = round((time.monotonic() - start) * 1000.0, 1)
+        return MXHandshakeResult(
+            provider=provider,
+            mx_host=mx_host,
+            status="NO-AAAA",
+            code="N/A",
+            banner="Provider MX is IPv4-only (no AAAA record published)",
+            elapsed_ms=elapsed,
+        )
+    except Exception as e:
+        elapsed = round((time.monotonic() - start) * 1000.0, 1)
+        return MXHandshakeResult(
+            provider=provider,
+            mx_host=mx_host,
+            status="PORT25-BLOCKED",
+            code="ERR",
+            banner=str(e)[:80],
+            elapsed_ms=elapsed,
+        )
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+def check_domain_mail_dns(domain: str, egress_ip: str) -> Dict[str, Any]:
+    """Inspect a domain's MX, SPF, and DMARC records and check if `egress_ip` is in SPF."""
+    mx_records = dns_query(domain, qtype=15)
+    txt_records = dns_query(domain, qtype=16)
+    dmarc_records = dns_query(f"_dmarc.{domain}", qtype=16)
+
+    spf_record = next((t for t in txt_records if t.lower().startswith("v=spf1")), None)
+    dmarc_record = next((t for t in dmarc_records if t.lower().startswith("v=dmarc1")), None)
+    ip_in_spf = bool(spf_record and egress_ip in spf_record)
+
+    return {
+        "domain": domain,
+        "mx_records": mx_records,
+        "spf_record": spf_record,
+        "dmarc_record": dmarc_record,
+        "ip_literally_in_spf": ip_in_spf,
+    }
+
+
+def check_mail_egress(
+    identity: IdentityInfo,
+    family: socket.AddressFamily,
+    mail_domain: Optional[str] = None,
+    timeout: float = 4.0,
+) -> MailEgressReport:
+    report = MailEgressReport()
+
+    if not identity.ptr_record:
+        report.ptr_status = "MISSING"
+        report.fcrdns_status = "FAIL"
+    elif identity.generic_ptr:
+        report.ptr_status = f"GENERIC ({identity.ptr_record})"
+        report.fcrdns_status = "PASS" if identity.fcrdns_valid else "FAIL"
+    else:
+        report.ptr_status = f"CUSTOM ({identity.ptr_record})"
+        report.fcrdns_status = "PASS" if identity.fcrdns_valid else "FAIL"
+
+    ehlo_host = identity.ptr_record if identity.ptr_record else "mail.example.com"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        f_465 = pool.submit(probe_tcp_port, "smtp.gmail.com", 465, family, 3.5)
+        f_587 = pool.submit(probe_tcp_port, "smtp.gmail.com", 587, family, 3.5)
+        mx_futs = [
+            pool.submit(smtp_banner_and_ehlo_probe, prov, host, family, ehlo_host, 4.0)
+            for prov, host in MX_TEST_TARGETS
+        ]
+
+        report.port_465_open = f_465.result()
+        report.port_587_open = f_587.result()
+        report.mx_handshakes = [f.result() for f in mx_futs]
+
+    report.port_25_open = any(h.status in ("CLEAN", "BLOCKED", "WARN") for h in report.mx_handshakes)
+
+    # Compute overall Mail Readiness status
+    if not report.port_25_open:
+        report.mail_readiness = "PORT25-BLOCKED"
+    elif any(h.status == "BLOCKED" for h in report.mx_handshakes):
+        report.mail_readiness = "BLACKLISTED"
+    elif not identity.ptr_record or not identity.fcrdns_valid or identity.generic_ptr:
+        report.mail_readiness = "NEEDS-PTR"
+    else:
+        report.mail_readiness = "READY"
+
+    if mail_domain and identity.ip:
+        report.domain_check = check_domain_mail_dns(mail_domain, identity.ip)
+
+    return report
+
+
+# ==============================================================================
+# Phase 4: Target Services Probe (AI/Agents, Social Media, Search/CDN/Streaming)
+# ==============================================================================
+
+@dataclass
+class ServiceProbeResult:
+    category: str
+    service: str
+    url: str
+    verdict: str  # CLEAN, CAPTCHA, GEO-BLOCKED, RATE-LIMITED, BLOCKED, IPV4-ONLY, UNREACHABLE, WARN
+    http_status: int
+    detail: str
+    elapsed_ms: float
+
+
+def _evaluate_probe(
+    category: str,
+    service: str,
+    url: str,
+    resp: HTTPResponseData,
+    custom_eval: Optional[Callable[[HTTPResponseData], Tuple[str, str]]] = None,
+) -> ServiceProbeResult:
+    if resp.ipv4_only_target:
+        return ServiceProbeResult(
+            category, service, url, "IPV4-ONLY", 0,
+            "Target service has no IPv6 (AAAA) record", resp.elapsed_ms
+        )
+
+    if resp.status == 0 or resp.error:
+        err_short = (resp.error or "Connection failed")[:60]
+        return ServiceProbeResult(category, service, url, "UNREACHABLE", 0, err_short, resp.elapsed_ms)
+
+    body_lower = resp.body.lower()
+    cf_mitigated = resp.headers.get("cf-mitigated", "").lower()
+
+    if custom_eval is not None:
+        verdict, detail = custom_eval(resp)
+        return ServiceProbeResult(category, service, url, verdict, resp.status, detail, resp.elapsed_ms)
+
+    if cf_mitigated == "challenge" or "just a moment..." in body_lower or "cf-chl-bypass" in body_lower:
+        return ServiceProbeResult(category, service, url, "CAPTCHA", resp.status, "Cloudflare Challenge / Turnstile", resp.elapsed_ms)
+
+    if resp.status == 429:
+        return ServiceProbeResult(category, service, url, "RATE-LIMITED", 429, "HTTP 429 Too Many Requests", resp.elapsed_ms)
+
+    if resp.status in (401, 405):
+        return ServiceProbeResult(category, service, url, "CLEAN", resp.status, f"API Reachable (HTTP {resp.status})", resp.elapsed_ms)
+
+    if resp.status == 403:
+        if "cloudflare" in body_lower or "attention required" in body_lower:
+            return ServiceProbeResult(category, service, url, "BLOCKED", 403, "Cloudflare WAF 403 Block", resp.elapsed_ms)
+        return ServiceProbeResult(category, service, url, "BLOCKED", 403, "HTTP 403 Access Denied / IP Blocked", resp.elapsed_ms)
+
+    if 200 <= resp.status < 400:
+        return ServiceProbeResult(category, service, url, "CLEAN", resp.status, f"HTTP {resp.status} OK", resp.elapsed_ms)
+
+    return ServiceProbeResult(category, service, url, "WARN", resp.status, f"HTTP {resp.status}", resp.elapsed_ms)
+
+
+def eval_openai_api(resp: HTTPResponseData) -> Tuple[str, str]:
+    b = resp.body.lower()
+    if "unsupported_country_region_territory" in b:
+        return "GEO-BLOCKED", "OpenAI Geo-Block (Unsupported Country/Region)"
+    if resp.headers.get("cf-mitigated") == "challenge" or "just a moment" in b:
+        return "CAPTCHA", "Cloudflare WAF Challenge"
+    if resp.status == 401 and ("invalid_api_key" in b or "missing bearer" in b or "authentication" in b):
+        return "CLEAN", "API Reachable (401 Auth Prompt, No WAF Block)"
+    if resp.status == 403:
+        return "BLOCKED", "Cloudflare / OpenAI 403 IP Block"
+    return "CLEAN", f"HTTP {resp.status}"
+
+
+def eval_chatgpt_web(resp: HTTPResponseData) -> Tuple[str, str]:
+    b = resp.body.lower()
+    if "unsupported_country_region_territory" in b or "vpn" in b and resp.status == 403:
+        return "GEO-BLOCKED", "ChatGPT Geo/VPN Block"
+    if resp.headers.get("cf-mitigated") == "challenge" or "just a moment" in b:
+        return "CAPTCHA", "Cloudflare Turnstile Challenge on Homepage"
+    if resp.status == 403:
+        return "BLOCKED", "HTTP 403 Blocked by Cloudflare WAF"
+    if 200 <= resp.status < 400:
+        return "CLEAN", f"Web App Reachable (HTTP {resp.status}, No Turnstile)"
+    return "WARN", f"HTTP {resp.status}"
+
+
+def eval_anthropic_api(resp: HTTPResponseData) -> Tuple[str, str]:
+    b = resp.body.lower()
+    if resp.headers.get("cf-mitigated") == "challenge" or "just a moment" in b:
+        return "CAPTCHA", "Cloudflare Challenge"
+    if resp.status in (401, 404, 405) and (
+        "authentication_error" in b or "not_found" in b or "method" in b or "x-api-key" in b
+    ):
+        return "CLEAN", f"API Reachable (HTTP {resp.status}, No WAF Block)"
+    if resp.status == 403:
+        if "forbidden" in b and "error" in b:
+            return "GEO-BLOCKED", "Anthropic 403 Forbidden (Region/Geo Restricted)"
+        return "BLOCKED", "HTTP 403 WAF / IP Blocked"
+    return "CLEAN", f"HTTP {resp.status}"
+
+
+def eval_gemini_api(resp: HTTPResponseData) -> Tuple[str, str]:
+    b = resp.body.lower()
+    if "user location is not supported" in b or "location is not supported" in b:
+        return "GEO-BLOCKED", "Google Geo-Block (User location not supported)"
+    if resp.status == 400 and ("api_key_invalid" in b or "api key not valid" in b):
+        return "CLEAN", "API Reachable (400 Key Validation Reached, Geo Allowed)"
+    if resp.status == 200:
+        return "CLEAN", "API Reachable (HTTP 200 OK)"
+    if resp.status == 403:
+        if "Your client does not have permission" in resp.body or "forbidden" in b:
+            return "GEO-BLOCKED", "Google 403 Region/Subnet Restricted"
+        return "BLOCKED", "HTTP 403 Access Denied"
+    return "WARN", f"HTTP {resp.status}"
+
+
+def eval_google_search(resp: HTTPResponseData) -> Tuple[str, str]:
+    b = resp.body.lower()
+    if resp.status == 429 or "/sorry/index" in resp.url.lower() or "unusual traffic from your computer" in b:
+        return "CAPTCHA", "Google '/sorry/' Captcha Wall (Unusual Traffic)"
+    if resp.status == 200:
+        return "CLEAN", "Direct Search Allowed (No Captcha)"
+    return "WARN", f"HTTP {resp.status}"
+
+
+def eval_reddit(resp: HTTPResponseData) -> Tuple[str, str]:
+    b = resp.body.lower()
+    if resp.status == 403 or "blocked by network security" in b or "whoa there, pardner" in b:
+        return "BLOCKED", "Reddit Datacenter IP Block (403 Network Security)"
+    if resp.status == 429:
+        return "RATE-LIMITED", "HTTP 429 Rate-Limited"
+    if resp.status == 200:
+        return "CLEAN", "Subreddit JSON Feed Accessible (200 OK)"
+    return "WARN", f"HTTP {resp.status}"
+
+
+def eval_netflix(resp: HTTPResponseData) -> Tuple[str, str]:
+    if resp.status == 200:
+        return "CLEAN", "Full Catalog Accessible (Not Flagged as Proxy)"
+    if resp.status == 404:
+        return "WARN", "Originals Only (Flagged as Datacenter/Proxy IP)"
+    if resp.status == 403:
+        return "BLOCKED", "Netflix 403 IP Blocked"
+    return "WARN", f"HTTP {resp.status}"
+
+
+def eval_discord(resp: HTTPResponseData) -> Tuple[str, str]:
+    b = resp.body.lower()
+    if resp.status == 429 or "error 1015" in b:
+        return "RATE-LIMITED", "Cloudflare 1015 / Discord API Rate-Limited"
+    if resp.status == 403:
+        return "BLOCKED", "Cloudflare 403 IP Block"
+    if resp.status == 200 and "wss://" in b:
+        return "CLEAN", "Gateway WebSocket Endpoint Accessible"
+    return "CLEAN", f"HTTP {resp.status}"
+
+
+SERVICE_PROBES: List[Tuple[str, str, str, Optional[Callable[[HTTPResponseData], Tuple[str, str]]]]] = [
+    # AI & Agent Endpoints
+    ("AI / Agents", "OpenAI API", "https://api.openai.com/v1/models", eval_openai_api),
+    ("AI / Agents", "ChatGPT Web", "https://chatgpt.com/", eval_chatgpt_web),
+    ("AI / Agents", "Anthropic Claude API", "https://api.anthropic.com/v1/messages", eval_anthropic_api),
+    (
+        "AI / Agents",
+        "Google Gemini API",
+        "https://generativelanguage.googleapis.com/v1beta/models?key=AIzaSyDummyKeyCheckForVetting",
+        eval_gemini_api,
+    ),
+    ("AI / Agents", "Perplexity AI", "https://www.perplexity.ai", None),
+    ("AI / Agents", "Hugging Face Hub", "https://huggingface.co/api/models?limit=1", None),
+    ("AI / Agents", "OpenRouter API", "https://openrouter.ai/api/v1/models", None),
+    ("AI / Agents", "GitHub API", "https://api.github.com/zen", None),
+
+    # Social Media & Messaging
+    ("Social Media", "X (Twitter)", "https://x.com/robots.txt", None),
+    ("Social Media", "Reddit JSON API", "https://www.reddit.com/r/all/new.json?limit=1", eval_reddit),
+    ("Social Media", "Instagram", "https://www.instagram.com/robots.txt", None),
+    ("Social Media", "TikTok", "https://www.tiktok.com/robots.txt", None),
+    ("Social Media", "LinkedIn", "https://www.linkedin.com/robots.txt", None),
+    ("Social Media", "Discord API Gateway", "https://discord.com/api/v10/gateway", eval_discord),
+    ("Social Media", "Telegram Bot API", "https://api.telegram.org", None),
+
+    # Search, Cloud CDN & Streaming
+    ("Search & Cloud", "Google Search (Captcha)", "https://www.google.com/search?q=linux+kernel&hl=en", eval_google_search),
+    ("Search & Cloud", "YouTube", "https://www.youtube.com/robots.txt", None),
+    ("Search & Cloud", "Cloudflare CDN", "https://www.cloudflare.com/cdn-cgi/trace", None),
+    ("Search & Cloud", "Netflix Non-Originals", "https://www.netflix.com/title/81280792", eval_netflix),
+]
+
+
+def run_service_probes(family: socket.AddressFamily, timeout: float = 5.5) -> List[ServiceProbeResult]:
+    def _worker(item: Tuple[str, str, str, Optional[Callable[[HTTPResponseData], Tuple[str, str]]]]) -> ServiceProbeResult:
+        cat, name, url, evaluator = item
+        resp = http_request(url, family=family, timeout=timeout)
+        return _evaluate_probe(cat, name, url, resp, evaluator)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+        return list(pool.map(_worker, SERVICE_PROBES))
+
+
+# ==============================================================================
+# Phase 5: Per-Stack Cleanliness Scoring & Verdict
+# ==============================================================================
+
+@dataclass
+class StackVerdict:
+    stack: str
+    available: bool
+    score: int = 100
+    verdict: str = "CLEAN"
+    mail_verdict: str = "PORT25-BLOCKED"
+    deductions: List[str] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+    identity: Optional[IdentityInfo] = None
+    reputation: Optional[ReputationResult] = None
+    mail: Optional[MailEgressReport] = None
+    services: List[ServiceProbeResult] = field(default_factory=list)
+
+
+def compute_stack_verdict(
+    stack: str,
+    identity: IdentityInfo,
+    rep: ReputationResult,
+    mail: MailEgressReport,
+    services: List[ServiceProbeResult],
+) -> StackVerdict:
+    score = 100
+    reasons: List[str] = []
+    notes: List[str] = []
+
+    # 1. DNSBL Penalties (Hard evidence of spam/abuse)
+    if rep.dnsbl_listed:
+        n = len(rep.dnsbl_listed)
+        penalty = min(45, n * 15)
+        score -= penalty
+        names = ", ".join(d["zone"] for d in rep.dnsbl_listed[:4])
+        reasons.append(f"-{penalty} pts: Listed on {n} DNSBL(s) ({names})")
+
+    # 2. Fraud Scores & Threat Feeds
+    if rep.sender_score is not None and rep.sender_score < 70:
+        pen = 15 if rep.sender_score < 50 else 8
+        score -= pen
+        reasons.append(f"-{pen} pts: Low Validity SenderScore ({rep.sender_score}/100)")
+
+    # For IPv6, Scamalytics often assigns 100 to entire unindexed datacenter /32s; cross-check with ProxyCheck & DNSBLs
+    if rep.scamalytics_score is not None and rep.scamalytics_score >= 30:
+        if stack == "IPv6" and rep.scamalytics_score == 100 and (rep.proxycheck_risk or 0) < 50 and not rep.dnsbl_listed:
+            score -= 8
+            reasons.append("-8 pts: Scamalytics scores IPv6 ASN range at 100/100 (ProxyCheck & DNSBLs are clean)")
+        else:
+            pen = 18 if rep.scamalytics_score >= 65 else 10
+            score -= pen
+            reasons.append(f"-{pen} pts: Scamalytics Fraud Score is {rep.scamalytics_score}/100 ({rep.scamalytics_risk})")
+
+    if rep.proxycheck_risk is not None and rep.proxycheck_risk >= 50:
+        pen = 15 if rep.proxycheck_risk >= 75 else 8
+        score -= pen
+        reasons.append(f"-{pen} pts: ProxyCheck.io Risk Score is {rep.proxycheck_risk}/100 ({rep.proxycheck_type})")
+
+    if rep.stopforumspam_appears:
+        score -= 15
+        reasons.append(f"-15 pts: Listed in StopForumSpam ({rep.stopforumspam_frequency} abuse reports)")
+
+    if rep.dshield_reports > 0:
+        score -= 12
+        reasons.append(f"-12 pts: SANS ISC DShield reports {rep.dshield_reports} attack packet logs from this IP")
+
+    # Cross-validated Proxy/VPN detection across 4 DBs (IP-API, ipapi.is, ProxyCheck.io, Shodan)
+    if identity.is_abuser or identity.is_tor:
+        score -= 20
+        reasons.append("-20 pts: Flagged as known abuser / Tor exit node by ipapi.is")
+    elif len(identity.proxy_detections) >= 2:
+        score -= 15
+        reasons.append(f"-15 pts: Confirmed Proxy/VPN across {len(identity.proxy_detections)} DBs ({', '.join(identity.proxy_detections)})")
+    elif len(identity.proxy_detections) == 1:
+        score -= 5
+        reasons.append(f"-5 pts: Flagged as Proxy/VPN by 1/4 DBs ({identity.proxy_detections[0]} — common for VPS hosting ASNs)")
+
+    if rep.shodan_vulns:
+        score -= 10
+        reasons.append(f"-10 pts: Shodan InternetDB reports {len(rep.shodan_vulns)} CVE(s) on this IP")
+
+    # 3. GeoIP Broadcast / Mismatch Penalty
+    if not identity.geo_consistent:
+        score -= 5
+        src_str = ", ".join(f"{k}={v}" for k, v in identity.geo_sources.items())
+        reasons.append(f"-5 pts: GeoIP Country Mismatch across DBs ({src_str})")
+
+    # 4. Mail Server Reputation Rejections (Only penalize IP cleanliness if an MX actively rejected the IP;
+    #    Port 25 firewall blocks & missing PTR are tracked in mail_verdict and notes)
+    blocked_mx = [h.provider for h in mail.mx_handshakes if h.status == "BLOCKED"]
+    if blocked_mx:
+        pen = min(20, len(blocked_mx) * 8)
+        score -= pen
+        reasons.append(f"-{pen} pts: Actively rejected by MX server(s) on Port 25 ({', '.join(blocked_mx)})")
+
+    if not mail.port_25_open:
+        notes.append("Info: Outbound SMTP Port 25 is blocked by VPS firewall (standard on most clouds; tracked under Mail Readiness)")
+    if not identity.ptr_record:
+        notes.append("Info: No Reverse DNS (PTR) configured yet (set PTR in VPS panel if running a mail server)")
+
+    # 5. Target Service Reachability Penalties (Separate IP/WAF Blocks from Regional Geo-Blocks)
+    waf_blocked = [s.service for s in services if s.verdict in ("BLOCKED", "CAPTCHA")]
+    geo_blocked = [s.service for s in services if s.verdict == "GEO-BLOCKED"]
+
+    if waf_blocked:
+        # Reddit blocks almost 95% of datacenter ASNs; weight 1 datacenter block lightly (-4 pts), multiple heavier
+        pen = 4 if len(waf_blocked) == 1 else min(25, len(waf_blocked) * 5)
+        score -= pen
+        reasons.append(f"-{pen} pts: WAF/IP Blocked or Captcha on {len(waf_blocked)} service(s) ({', '.join(waf_blocked[:4])})")
+
+    if geo_blocked:
+        notes.append(f"Region Policy: {len(geo_blocked)} service(s) Geo-Blocked in this country ({', '.join(geo_blocked)})")
+
+    score = max(0, score)
+    if score >= 80 and len(rep.dnsbl_listed) == 0:
+        verdict = "CLEAN"
+    elif score >= 55:
+        verdict = "WARN"
+    else:
+        verdict = "DIRTY"
+
+    return StackVerdict(
+        stack=stack,
+        available=True,
+        score=score,
+        verdict=verdict,
+        mail_verdict=mail.mail_readiness,
+        deductions=reasons,
+        notes=notes,
+        identity=identity,
+        reputation=rep,
+        mail=mail,
+        services=services,
+    )
+
+
+# ==============================================================================
+# Pretty Terminal Report Printer
+# ==============================================================================
+
+def print_stack_report(sv: StackVerdict) -> None:
+    print(f"\n{Style.BOLD}{Style.CYAN}============================================================================={Style.RESET}")
+    if not sv.available or not sv.identity or not sv.identity.ip:
+        print(f" {Style.BOLD}{sv.stack} STACK:{Style.RESET} {badge('UNAVAILABLE')} (No {sv.stack} egress route detected on this VM)")
+        print(f"{Style.BOLD}{Style.CYAN}============================================================================={Style.RESET}")
+        return
+
+    ident = sv.identity
+    rep = sv.reputation
+    mail = sv.mail
+
+    print(
+        f" {Style.BOLD}{sv.stack} STACK REPORT{Style.RESET} — Egress IP: {Style.BOLD}{ident.ip}{Style.RESET}\n"
+        f" IP Cleanliness: {Style.BOLD}{sv.score}/100{Style.RESET} {badge(sv.verdict)} "
+        f"| Mail Egress Readiness: {badge(sv.mail_verdict)}"
+    )
+    print(f"{Style.BOLD}{Style.CYAN}============================================================================={Style.RESET}")
+
+    # Section 1: Identity & Network
+    print(f"\n{Style.BOLD}1. Egress Identity, GeoIP Consistency & Reverse DNS{Style.RESET}")
+    print(f"   • ASN / ISP      : {ident.asn} ({ident.isp})")
+    print(f"   • Organization   : {ident.org} (ASN Abuser Score: {ident.abuser_score})")
+    print(f"   • Geo Location   : {ident.city}, {ident.region}, {ident.country}")
+    geo_map_str = " | ".join(f"{k}:{v}" for k, v in ident.geo_sources.items()) or "Unknown"
+    geo_badge = badge("CONSISTENT" if ident.geo_consistent else "MISMATCH")
+    print(f"   • GeoIP DB Check : {geo_badge} ({geo_map_str}) [Edge Colo: {ident.cf_colo}, TLS: {ident.cf_tls}]")
+
+    if len(ident.proxy_detections) == 0:
+        proxy_badge = badge("CLEAN") + " (0/4 DBs)"
+    elif len(ident.proxy_detections) == 1:
+        proxy_badge = badge("1/4 DBS") + f" ({ident.proxy_detections[0]} only)"
+    else:
+        proxy_badge = badge("DIRTY") + f" ({', '.join(ident.proxy_detections)})"
+
+    flags = [
+        f"Hosting/DC={badge('YES' if ident.is_hosting else 'NO')}",
+        f"Proxy/VPN={proxy_badge}",
+        f"Tor={badge('DIRTY' if ident.is_tor else 'CLEAN')}",
+        f"Abuser={badge('DIRTY' if ident.is_abuser else 'CLEAN')}",
+    ]
+    print(f"   • Network Flags  : {', '.join(flags)}")
+    print(
+        f"   • Reverse DNS    : {ident.ptr_record or 'None'} "
+        f"| FCrDNS: {badge('PASS' if ident.fcrdns_valid else 'FAIL')} "
+        f"| Type: {badge('GENERIC-PTR' if ident.generic_ptr else ('CUSTOM' if ident.ptr_record else 'MISSING'))}"
+    )
+
+    # Section 2: Online Reputation & Blacklists
+    if rep:
+        print(f"\n{Style.BOLD}2. Online Reputation DBs, IP Scores & Blacklists (DNSBLs){Style.RESET}")
+        ss_str = f"{rep.sender_score}/100" if rep.sender_score is not None else "Unscored (Low mail volume)"
+        scam_str = (
+            f"{rep.scamalytics_score}/100 {badge(rep.scamalytics_risk)}"
+            if rep.scamalytics_score is not None
+            else "N/A"
+        )
+        pcheck_str = (
+            f"Risk={rep.proxycheck_risk}/100 | Type={rep.proxycheck_type} | Proxy={badge('DIRTY' if rep.proxycheck_proxy else 'CLEAN')}"
+            if rep.proxycheck_risk is not None
+            else "N/A"
+        )
+        sfs_str = (
+            f"{badge('LISTED')} ({rep.stopforumspam_frequency} reports)"
+            if rep.stopforumspam_appears
+            else f"{badge('CLEAN')} (0 reports)"
+        )
+        dshield_str = (
+            f"{badge('LISTED')} ({rep.dshield_reports} reports / {rep.dshield_attacks} targets)"
+            if rep.dshield_reports > 0
+            else f"{badge('CLEAN')} (0 attack reports)"
+        )
+        print(f"   • Validity SenderScore    : {ss_str} | Mailspike Rep: {rep.mailspike_rep}")
+        print(f"   • Scamalytics Fraud Score : {scam_str}")
+        print(f"   • ProxyCheck.io Score     : {pcheck_str}")
+        print(f"   • StopForumSpam & DShield : SFS={sfs_str} | SANS DShield={dshield_str}")
+        ports_str = ", ".join(map(str, rep.shodan_open_ports)) if rep.shodan_open_ports else "None indexed"
+        vulns_str = ", ".join(rep.shodan_vulns) if rep.shodan_vulns else "None"
+        tags_str = ", ".join(rep.shodan_tags) if rep.shodan_tags else "None"
+        print(f"   • Shodan InternetDB       : Open Ports=[{ports_str}] | CVEs=[{vulns_str}] | Tags=[{tags_str}]")
+
+        if rep.dnsbl_listed:
+            print(f"   • DNSBL Status            : {badge('LISTED')} on {len(rep.dnsbl_listed)}/{rep.dnsbl_total_checked} blacklists:")
+            for item in rep.dnsbl_listed:
+                print(f"       - {Style.RED}✗ {item['name']} ({item['zone']}) -> {item['return_code']}{Style.RESET}")
+        else:
+            print(f"   • DNSBL Status            : {badge('CLEAN')} (0/{rep.dnsbl_total_checked} blacklists triggered)")
+
+    # Section 3: Mail Egress & MX Handshakes
+    if mail:
+        print(f"\n{Style.BOLD}3. Mail Server Readiness & Outbound SMTP Egress{Style.RESET}")
+        p25 = badge("OPEN" if mail.port_25_open else "BLOCKED")
+        p465 = badge("OPEN" if mail.port_465_open else "BLOCKED")
+        p587 = badge("OPEN" if mail.port_587_open else "BLOCKED")
+        print(f"   • Outbound Mail Ports     : Port 25 (MX Relay)={p25} | Port 465 (SMTPS)={p465} | Port 587 (Submission)={p587}")
+        print(f"   • Live MX Server Port 25 Handshakes:")
+        for h in mail.mx_handshakes:
+            print(
+                f"       - {h.provider:<24} ({h.mx_host:<38}): "
+                f"{badge(h.status)} [{h.code}] ({h.elapsed_ms:.0f}ms) {Style.DIM}{h.banner[:65]}{Style.RESET}"
+            )
+
+        if mail.domain_check:
+            dc = mail.domain_check
+            print(f"   • Domain Alignment ({dc['domain']}):")
+            print(f"       - MX Records  : {', '.join(dc['mx_records']) or 'None'}")
+            print(f"       - SPF Record  : {dc['spf_record'] or 'Missing'}")
+            print(f"       - DMARC Record: {dc['dmarc_record'] or 'Missing'}")
+            print(f"       - IP in SPF   : {badge('PASS' if dc['ip_literally_in_spf'] else 'WARN')}")
+
+    # Section 4: Target Services Probe
+    if sv.services:
+        print(f"\n{Style.BOLD}4. Target Services Reachability (AI/Agents, Social Media, Search & Streaming){Style.RESET}")
+        print(f"   {'Category':<15} {'Service':<24} {'Status':<16} {'HTTP':<6} {'Latency':<9} {'Details'}")
+        print(f"   {'-'*14:<15} {'-'*23:<24} {'-'*14:<16} {'-'*5:<6} {'-'*8:<9} {'-'*34}")
+        for s in sv.services:
+            print(
+                f"   {s.category:<15} {s.service:<24} {badge(s.verdict):<25} "
+                f"{str(s.http_status):<6} {f'{s.elapsed_ms:.0f}ms':<9} {s.detail}"
+            )
+
+    # Section 5: Score Breakdown & Notes
+    if sv.deductions or sv.notes:
+        print(f"\n{Style.BOLD}5. Score Breakdown & Operational Notes ({sv.stack}){Style.RESET}")
+        for d in sv.deductions:
+            print(f"   • {Style.YELLOW}{d}{Style.RESET}")
+        for n in sv.notes:
+            print(f"   • {Style.CYAN}{n}{Style.RESET}")
+
+
+# ==============================================================================
+# Main Entrypoint
+# ==============================================================================
+
+def vet_single_stack(
+    family: socket.AddressFamily,
+    mail_domain: Optional[str],
+    timeout: float,
+) -> StackVerdict:
+    stack_name = "IPv4" if family == socket.AF_INET else "IPv6"
+    ident = check_identity_and_rdns(family, timeout=timeout)
+    if not ident.ip:
+        return StackVerdict(stack=stack_name, available=False, score=0, verdict="UNAVAILABLE")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        f_rep = pool.submit(check_online_reputation, ident.ip, family, ident, timeout)
+        f_mail = pool.submit(check_mail_egress, ident, family, mail_domain, timeout)
+        f_svc = pool.submit(run_service_probes, family, timeout)
+
+        rep = f_rep.result()
+        mail = f_mail.result()
+        svcs = f_svc.result()
+
+    return compute_stack_verdict(stack_name, ident, rep, mail, svcs)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Zero-dependency Dual-Stack (IPv4 & IPv6) VM Egress & IP Reputation Vetter (v2.0)"
+    )
+    parser.add_argument("--ipv4-only", action="store_true", help="Only vet IPv4 egress")
+    parser.add_argument("--ipv6-only", action="store_true", help="Only vet IPv6 egress")
+    parser.add_argument("--mail-domain", type=str, default=None, help="Optional domain to verify MX/SPF/DMARC alignment")
+    parser.add_argument("--timeout", type=float, default=5.5, help="Per-request socket timeout in seconds (default: 5.5)")
+    parser.add_argument("--json", type=str, default=None, metavar="FILE", help="Write full JSON report to FILE (use '-' for stdout)")
+    args = parser.parse_args()
+
+    families: List[socket.AddressFamily] = []
+    if args.ipv4_only:
+        families = [socket.AF_INET]
+    elif args.ipv6_only:
+        families = [socket.AF_INET6]
+    else:
+        families = [socket.AF_INET, socket.AF_INET6]
+
+    if args.json != "-":
+        print(f"{Style.BOLD}Starting Dual-Stack VM Egress, Mail & IP Reputation Vetting (v2.0)...{Style.RESET}")
+
+    results: Dict[str, StackVerdict] = {}
+    for fam in families:
+        sv = vet_single_stack(fam, mail_domain=args.mail_domain, timeout=args.timeout)
+        results[sv.stack] = sv
+        if args.json != "-":
+            print_stack_report(sv)
+
+    # Final Summary Table
+    if args.json != "-":
+        print(f"\n{Style.BOLD}OVERALL VM EGRESS SUMMARY{Style.RESET}")
+        for stack_name, sv in results.items():
+            if not sv.available or not sv.identity or not sv.identity.ip:
+                print(f"  • {stack_name:<5}: {badge('UNAVAILABLE')}")
+            else:
+                print(
+                    f"  • {stack_name:<5}: {sv.identity.ip:<39} -> "
+                    f"IP Score: {Style.BOLD}{sv.score}/100{Style.RESET} {badge(sv.verdict)} | "
+                    f"Mail: {badge(sv.mail_verdict)}"
+                )
+        print()
+
+    if args.json:
+        payload = {
+            "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "stacks": {k: asdict(v) for k, v in results.items()},
+        }
+        json_text = json.dumps(payload, indent=2)
+        if args.json == "-":
+            print(json_text)
+        else:
+            with open(args.json, "w", encoding="utf-8") as f:
+                f.write(json_text + "\n")
+            print(f"Saved JSON report to {args.json}")
+
+    any_dirty = any(sv.available and sv.verdict == "DIRTY" for sv in results.values())
+    return 2 if any_dirty else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
